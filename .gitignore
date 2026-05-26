@@ -1,5 +1,6 @@
 # Secrets — never push this
 .env
+.secrets
 
 # Python
 __pycache__/

@@ -1,0 +1,53 @@
+"""
+api/routes/graph.py — GET /api/v1/graph?repo_name=fastapi
+
+Returns the pre-built interactive dependency graph HTML + stats.
+
+The graph is built during ingestion and cached in memory.
+This route just retrieves from the cache — no recomputation.
+
+Why not rebuild on every request?
+  Building the graph requires the local repo files (to parse imports).
+  We delete those after ingestion. So we cache the result at ingest time.
+  Fast response, no reprocessing.
+"""
+
+from fastapi import APIRouter, HTTPException
+from api.models import GraphResponse
+
+# Import the cache from ingest.py — single source of truth
+from api.routes.ingest import graph_cache
+
+router = APIRouter()
+
+
+@router.get(
+    "/graph",
+    response_model=GraphResponse,
+    summary="Get dependency graph",
+    description="Returns interactive Pyvis HTML graph + statistics for the indexed repo.",
+)
+async def get_graph(repo_name: str):
+    """
+    Returns the dependency graph built during ingestion.
+    The HTML is a self-contained Pyvis network — embed it in an iframe.
+    """
+
+    if repo_name not in graph_cache:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No graph found for '{repo_name}'. "
+                f"Run POST /api/v1/ingest first, or the server may have restarted "
+                f"(graph cache is in-memory and resets on restart)."
+            ),
+        )
+
+    cached = graph_cache[repo_name]
+
+    return GraphResponse(
+        status="success",
+        repo_name=repo_name,
+        html=cached["html"],
+        stats=cached["stats"],
+    )

@@ -69,10 +69,10 @@ import tree_sitter_typescript as tstypescript
 # building a Language object has a small cost. Module-level constants
 # are built once when the module is first imported.
 # -----------------------------------------------------------------------
-PY_LANGUAGE  = Language(tspython.language())
-JS_LANGUAGE  = Language(tsjavascript.language())
-TS_LANGUAGE  = Language(tstypescript.language_typescript())
-TSX_LANGUAGE = Language(tstypescript.language_tsx())
+PY_LANGUAGE  = Language(tspython.language(), "python")
+JS_LANGUAGE  = Language(tsjavascript.language(), "javascript")
+TS_LANGUAGE  = Language(tstypescript.language_typescript(), "typescript")
+TSX_LANGUAGE = Language(tstypescript.language_tsx(), "tsx")
 
 # Map language name → Language object
 # These names match the "language" field returned by walker.py
@@ -136,7 +136,8 @@ def _get_parser(language: str) -> Parser | None:
     if lang_obj is None:
         return None
 
-    parser = Parser(lang_obj)
+    parser = Parser()
+    parser.set_language(lang_obj)
     return parser
 
 

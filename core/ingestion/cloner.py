@@ -25,8 +25,29 @@ Likely failure points (know these for interviews):
 
 import os
 import shutil
+import stat
 import re
 import git  # this is the gitpython library — "import git" not "import gitpython"
+
+
+def _force_remove_readonly(func, path, _):
+    """
+    Error handler for shutil.rmtree on Windows.
+
+    Git clones contain read-only files in .git/objects/.
+    Windows refuses to delete read-only files — raises PermissionError.
+    This handler clears the read-only flag then retries the delete.
+
+    How it works:
+      stat.S_IWRITE  = the write permission bit
+      os.chmod(path, stat.S_IWRITE) sets write permission on the file
+      func(path) retries the original operation (os.unlink or os.rmdir)
+
+    This is the standard Python idiom for rmtree on Windows with git repos.
+    On Linux/Railway this handler is never called — no-op on those systems.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 from config import TMP_DIR
 
@@ -121,7 +142,7 @@ def clone_repo(github_url: str) -> dict:
     # shutil.rmtree removes a directory and everything inside it
     # It's the equivalent of "rm -rf folder/" in bash
     if os.path.exists(local_path):
-        shutil.rmtree(local_path)
+        shutil.rmtree(local_path, onerror=_force_remove_readonly)
 
     # --- Step 5: Ensure the tmp/ directory itself exists ---
     # exist_ok=True means "don't error if it already exists"
