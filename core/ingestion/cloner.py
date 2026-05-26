@@ -33,7 +33,7 @@ os.environ["GIT_PYTHON_GIT_EXECUTABLE"] = "/usr/bin/git"
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 
 import git  # this is the gitpython library — "import git" not "import gitpython"
-
+git.refresh("/usr/bin/git")
 
 def _force_remove_readonly(func, path, _):
     """
