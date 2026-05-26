@@ -1,165 +1,113 @@
 """
-core/ingestion/cloner.py — Clones a public GitHub repo into /tmp/
+core/ingestion/cloner.py — Clones a GitHub repo using subprocess.
 
-What this file does:
-  1. Takes a GitHub URL string from the API request
-  2. Validates it looks like a real GitHub URL
-  3. Extracts a clean repo name from the URL (used as folder name + Qdrant collection name)
-  4. If the repo was already cloned (exists on disk), deletes it first (fresh clone every time)
-  5. Clones it into /tmp/<repo_name>/
-  6. Returns the local path so the next step (walker.py) knows where to look
+Why subprocess instead of GitPython:
+  GitPython is a wrapper around the git CLI binary. On Railway's container,
+  the git binary location is not standard (/usr/bin/git doesn't exist).
+  GitPython can't find it and crashes at import time.
 
-Why fresh clone every time?
-  The user might re-submit the same URL after the repo was updated.
-  Stale code = wrong analysis. Always fresh = always accurate.
-  The performance cost is acceptable for a demo.
-
-Likely failure points (know these for interviews):
-  - Private repos: GitPython will hang or throw GitCommandError. We catch this.
-  - Invalid URLs: caught by our validation before clone attempt.
-  - No internet on Railway: extremely rare, but we catch the generic exception.
-  - Repo too large (Linux kernel etc.): clone takes too long. The MAX_FILES limit
-    in walker.py handles this at the next step, but the clone itself could still
-    be slow. Known limitation.
+  subprocess.run() with shutil.which('git') finds git wherever it is
+  on the system PATH — no hardcoded paths, works on any Linux container.
 """
 
 import os
 import shutil
 import stat
 import re
-import git  # this is the gitpython library — "import git" not "import gitpython"
-
-
-def _force_remove_readonly(func, path, _):
-    """
-    Error handler for shutil.rmtree on Windows.
-
-    Git clones contain read-only files in .git/objects/.
-    Windows refuses to delete read-only files — raises PermissionError.
-    This handler clears the read-only flag then retries the delete.
-
-    How it works:
-      stat.S_IWRITE  = the write permission bit
-      os.chmod(path, stat.S_IWRITE) sets write permission on the file
-      func(path) retries the original operation (os.unlink or os.rmdir)
-
-    This is the standard Python idiom for rmtree on Windows with git repos.
-    On Linux/Railway this handler is never called — no-op on those systems.
-    """
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
+import subprocess
 
 from config import TMP_DIR
 
 
+def _force_remove_readonly(func, path, _):
+    """Windows read-only file handler. No-op on Linux."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _find_git() -> str | None:
+    """
+    Find the git executable wherever it lives on this system.
+    shutil.which() searches PATH — works on any OS, any container.
+    Returns full path like '/nix/store/xxx/bin/git' or None if not found.
+    """
+    return shutil.which("git")
+
+
 def extract_repo_name(github_url: str) -> str:
-    """
-    Pulls a clean repo name out of a GitHub URL.
-
-    Examples:
-      "https://github.com/tiangolo/fastapi"        → "fastapi"
-      "https://github.com/tiangolo/fastapi.git"    → "fastapi"
-      "https://github.com/tiangolo/fastapi/"       → "fastapi"
-
-    How it works:
-      - Strip trailing slash and .git suffix
-      - Split by "/" and take the last segment
-      - That's always the repo name on GitHub URLs
-    """
-    # Remove trailing slash if present
     url = github_url.rstrip("/")
-
-    # Remove .git suffix if present
     if url.endswith(".git"):
         url = url[:-4]
-
-    # Split by "/" — last part is always the repo name
-    repo_name = url.split("/")[-1]
-
-    return repo_name
+    return url.split("/")[-1]
 
 
 def validate_github_url(url: str) -> bool:
-    """
-    Basic check that the URL is a GitHub repo URL.
-    Not perfect — it won't catch every edge case — but catches obvious mistakes
-    like someone pasting a random URL or leaving the field empty.
-
-    The regex checks for:
-      - Starts with http:// or https://
-      - Contains github.com
-      - Has at least owner/repo in the path (two path segments)
-    """
     pattern = r"^https?://github\.com/[\w\-\.]+/[\w\-\.]+/?$"
-
-    # re.match checks from the start of the string
-    # The .git suffix is optional so we strip it before matching
     clean_url = url.rstrip("/")
     if clean_url.endswith(".git"):
         clean_url = clean_url[:-4]
-
     return bool(re.match(pattern, clean_url))
 
 
 def clone_repo(github_url: str) -> dict:
     """
-    Main function — the only one called from outside this file.
-
-    Takes a GitHub URL.
-    Returns a dict with:
-      {
-        "repo_name": "fastapi",          # used as Qdrant collection name
-        "local_path": "/tmp/fastapi",    # passed to walker.py
-        "status": "cloned"               # or "error"
-        "message": "..."                 # human-readable description
-      }
-
-    Returning a dict instead of raising exceptions makes it easier for the
-    API route to return a clean JSON error response to the frontend.
+    Clone a public GitHub repo to /tmp/<repo_name>/.
+    Uses subprocess + shutil.which to find git — no GitPython dependency.
     """
 
-    # --- Step 1: Validate the URL ---
     if not validate_github_url(github_url):
         return {
             "status": "error",
+            "message": f"Invalid GitHub URL: '{github_url}'. Expected: https://github.com/owner/repo",
+            "repo_name": None,
+            "local_path": None,
+        }
+
+    # Find git binary
+    git_path = _find_git()
+    if not git_path:
+        return {
+            "status": "error",
             "message": (
-                f"Invalid GitHub URL: '{github_url}'. "
-                "Expected format: https://github.com/owner/repo"
+                "git executable not found on this system. "
+                "Add 'git' to nixpacks.toml packages."
             ),
             "repo_name": None,
             "local_path": None,
         }
 
-    # --- Step 2: Extract repo name ---
-    repo_name = extract_repo_name(github_url)
+    print(f"[cloner.py] Using git at: {git_path}")
 
-    # --- Step 3: Build the local path where we'll clone to ---
-    # os.path.join handles the slash correctly on Windows and Linux
-    # Result example: /your-project/tmp/fastapi
+    repo_name = extract_repo_name(github_url)
     local_path = os.path.join(TMP_DIR, repo_name)
 
-    # --- Step 4: Clean up any previous clone of this repo ---
-    # shutil.rmtree removes a directory and everything inside it
-    # It's the equivalent of "rm -rf folder/" in bash
+    # Clean previous clone
     if os.path.exists(local_path):
         shutil.rmtree(local_path, onerror=_force_remove_readonly)
 
-    # --- Step 5: Ensure the tmp/ directory itself exists ---
-    # exist_ok=True means "don't error if it already exists"
     os.makedirs(TMP_DIR, exist_ok=True)
 
-    # --- Step 6: Clone the repo ---
     try:
-        # git.Repo.clone_from is the GitPython equivalent of "git clone <url> <path>"
-        # depth=1 means "shallow clone" — only download the latest commit, not the
-        # entire git history. This is MUCH faster and uses much less disk space.
-        # For our purposes (analysing current code) we don't need history.
-        git.Repo.clone_from(
-            github_url,
-            local_path,
-            depth=1
+        result = subprocess.run(
+            [git_path, "clone", "--depth=1", github_url, local_path],
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
 
+        if result.returncode != 0:
+            return {
+                "status": "error",
+                "message": (
+                    f"Git clone failed for '{github_url}'. "
+                    f"Make sure the repo is public. "
+                    f"Git error: {result.stderr.strip()}"
+                ),
+                "repo_name": None,
+                "local_path": None,
+            }
+
+        print(f"[cloner.py] Successfully cloned '{repo_name}' to {local_path}")
         return {
             "status": "cloned",
             "message": f"Successfully cloned '{repo_name}'",
@@ -167,25 +115,15 @@ def clone_repo(github_url: str) -> dict:
             "local_path": local_path,
         }
 
-    except git.exc.GitCommandError as e:
-        # GitCommandError is thrown when git itself fails:
-        # - Repo doesn't exist (404)
-        # - Repo is private (authentication required)
-        # - Network issue during clone
-        # str(e) gives a readable error from git's stderr output
+    except subprocess.TimeoutExpired:
         return {
             "status": "error",
-            "message": (
-                f"Git clone failed for '{github_url}'. "
-                f"Make sure the repo is public and the URL is correct. "
-                f"Git error: {str(e)}"
-            ),
+            "message": "Clone timed out after 120s. Repository may be too large.",
             "repo_name": None,
             "local_path": None,
         }
 
     except Exception as e:
-        # Catch-all for anything unexpected (disk full, permission error, etc.)
         return {
             "status": "error",
             "message": f"Unexpected error while cloning: {str(e)}",

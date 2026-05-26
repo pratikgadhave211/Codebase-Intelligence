@@ -2,16 +2,13 @@
 fastapi==0.111.0
 uvicorn==0.29.0
 
-# Repo ingestion
-gitpython==3.1.43
-
 # AST parsing — PINNED. 0.22+ has breaking API changes.
 tree-sitter==0.21.3
 tree-sitter-python==0.21.0
 tree-sitter-javascript==0.21.3
 tree-sitter-typescript==0.21.2
 
-# Vector DB + embeddings (fastembed extra installs the local embedding model)
+# Vector DB + embeddings
 qdrant-client[fastembed]==1.9.1
 
 # LLM — Groq via OpenAI-compatible SDK
