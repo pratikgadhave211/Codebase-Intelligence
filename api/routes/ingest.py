@@ -52,8 +52,22 @@ from core.ingestion.cloner import clone_repo
 from core.ingestion.walker import walk_repo
 from core.ingestion.chunker import chunk_files
 from core.embeddings.embedder import embed_and_store
-from core.graph.builder import build_dependency_graph, get_graph_stats
-from core.graph.renderer import render_graph_html
+from core.graph.builder import (
+    build_dependency_graph,
+    get_graph_stats,
+)
+
+from core.graph.serializer import (
+    serialize_graph,
+)
+
+from core.llm.architecture import (
+    generate_architecture,
+)
+
+from core.storage.repo_metadata import (
+    save_repo_metadata,
+)
 
 router = APIRouter()
 
@@ -146,6 +160,31 @@ async def ingest_repo(request: IngestRequest):
         # Build graph while local files still exist (renderer needs paths)
         graph = build_dependency_graph(file_list)
         stats = get_graph_stats(graph)
+
+        # ── Step 5.1: Generate Architecture ───────────────────────────
+        print(
+            f"[ingest] Generating architecture for '{repo_name}'"
+        )
+
+        summary, mermaid = generate_architecture(
+            all_chunks
+        )
+
+        print(
+            f"[ingest] Architecture generated"
+        )
+
+        save_repo_metadata(
+            repo_name=repo_name,
+            summary=summary,
+            mermaid=mermaid,
+            graph_stats=stats,
+            graph_data=serialize_graph(graph),
+        )
+
+        print(
+            f"[ingest] Metadata persisted" 
+        )
 
         # Store in cache for other routes to access
         graph_cache[repo_name] = {
