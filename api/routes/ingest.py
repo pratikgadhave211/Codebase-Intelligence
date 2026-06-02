@@ -167,7 +167,7 @@ async def ingest_repo(request: IngestRequest):
         )
 
         summary, mermaid = generate_architecture(
-            all_chunks
+            all_chunks[:10]
         )
 
         print(
