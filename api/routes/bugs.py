@@ -79,7 +79,7 @@ async def detect_bugs(repo_name: str):
     """
 
     # Retrieve broad sample — 30 chunks from across the codebase
-    chunks = retrieve_all_chunks(repo_name, limit=30)
+    chunks = retrieve_all_chunks(repo_name, limit=15)
 
     if not chunks:
         raise HTTPException(
