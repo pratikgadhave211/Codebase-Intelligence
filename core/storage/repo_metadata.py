@@ -54,11 +54,12 @@ def ensure_metadata_collection():
 
 
 def save_repo_metadata(
-    repo_name: str,
-    summary: str,
-    mermaid: str,
-    graph_stats: dict,
-    graph_data: dict,
+    repo_name,
+    summary,
+    mermaid,
+    graph_stats,
+    graph_data,
+    architecture_context=None,
 ):
     """
     Store architecture + graph artifacts for a repository.
@@ -81,6 +82,7 @@ def save_repo_metadata(
             "mermaid": mermaid,
             "graph_stats": graph_stats,
             "graph_data": graph_data,
+            "architecture_context": architecture_context,
         },
     )
 

@@ -38,7 +38,14 @@ Interview talking point:
 import shutil
 import stat
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from core.llm.context_selector import (
+    select_architecture_chunks,
+)
+from core.graph.builder import (
+    build_dependency_graph,
+    get_graph_stats,
+    get_architecture_context,
+)
 
 def _force_remove_readonly(func, path, _):
     """Windows read-only file handler for shutil.rmtree — see cloner.py for explanation."""
@@ -156,35 +163,67 @@ async def ingest_repo(request: IngestRequest):
 
         print(f"[ingest] Stored {embed_result['chunks_stored']} chunks in Qdrant")
 
-        # ── Step 5: Build Dependency Graph ─────────────────────────────
+       # ── Step 5: Build Dependency Graph ─────────────────────────────
         # Build graph while local files still exist (renderer needs paths)
         graph = build_dependency_graph(file_list)
         stats = get_graph_stats(graph)
+
+        architecture_context = (
+            get_architecture_context(
+                graph
+            )
+        )
 
         # ── Step 5.1: Generate Architecture ───────────────────────────
         print(
             f"[ingest] Generating architecture for '{repo_name}'"
         )
 
+        architecture_chunks = (
+            select_architecture_chunks(
+                all_chunks,
+                max_chunks=12,
+            )
+        )
+ 
+        print(
+            f"[ingest] Architecture context: "
+            f"{len(architecture_chunks)} chunks"
+        )
+
+        for c in architecture_chunks:
+            print(
+                f"[ARCH] {c['file_path']}"
+            )
+
         summary, mermaid = generate_architecture(
-            all_chunks[:10]
+            architecture_chunks,
+            architecture_context,
         )
 
         print(
             f"[ingest] Architecture generated"
         )
 
-        save_repo_metadata(
-            repo_name=repo_name,
-            summary=summary,
-            mermaid=mermaid,
-            graph_stats=stats,
-            graph_data=serialize_graph(graph),
-        )
+        if summary != "Architecture generation failed.":
+            save_repo_metadata(
+                repo_name=repo_name,
+                summary=summary,
+                mermaid=mermaid,
+                graph_stats=stats,
+                graph_data=serialize_graph(graph),
+                architecture_context=architecture_context,
+            )
 
-        print(
-            f"[ingest] Metadata persisted" 
-        )
+            print(
+                f"[ingest] Metadata persisted" 
+            )
+        
+        else:
+            print(
+                "[ingest] Architecture generation failed "
+                "- metadata not saved"
+            )
 
         # Store in cache for other routes to access
         graph_cache[repo_name] = {

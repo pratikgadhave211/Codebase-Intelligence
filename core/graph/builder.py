@@ -231,33 +231,110 @@ def _resolve_js_import(
     """
     Resolve a JS/TS import path to an actual file in the repo.
 
-    JS imports are path-based: "./auth", "../config/database"
-    We resolve relative to the importing file's directory.
+    Supports:
+    - Relative imports:
+        ./foo
+        ../bar/baz
 
-    Third-party imports ("express", "react") don't start with "./" or "../"
-    — we skip those immediately.
+    - Vite aliases:
+        @/components/Button
+
+    Skips:
+    - Third-party packages:
+        react
+        express
+        lucide-react
     """
-    # Third-party package — no edge
-    if not import_path.startswith("."):
+
+    #
+    # Vite alias imports
+    #
+    if import_path.startswith("@/"):
+
+        resolved_base = (
+            "frontend/src/"
+            + import_path[2:]
+        )
+
+    #
+    # Relative imports
+    #
+    elif import_path.startswith("."):
+
+        import_dir = os.path.dirname(
+            importing_file
+        )
+
+        resolved_base = os.path.normpath(
+            os.path.join(
+                import_dir,
+                import_path,
+            )
+        )
+
+        resolved_base = (
+            resolved_base
+            .replace("\\", "/")
+        )
+
+    #
+    # Third-party package
+    #
+    else:
         return None
 
-    import_dir = os.path.dirname(importing_file)
-    # Resolve the relative path
-    resolved_base = os.path.normpath(os.path.join(import_dir, import_path))
-    # Normalise separators to forward slash for consistency
-    resolved_base = resolved_base.replace("\\", "/")
+    #
+    # Import already includes extension
+    #
+    if any(
+        resolved_base.endswith(ext)
+        for ext in [
+            ".ts",
+            ".tsx",
+            ".js",
+            ".jsx",
+            ".css",
+        ]
+    ):
+        if resolved_base in all_files:
+            return resolved_base
 
+    #
     # Try common extensions
-    for ext in [".ts", ".tsx", ".js", ".jsx"]:
+    #
+    for ext in [
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+    ]:
         candidate = resolved_base + ext
+
         if candidate in all_files:
             return candidate
 
-    # Try as directory index file
-    for ext in [".ts", ".js"]:
-        candidate = resolved_base + "/index" + ext
+    #
+    # Try directory index files
+    #
+    for ext in [
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+    ]:
+        candidate = (
+            resolved_base
+            + "/index"
+            + ext
+        )
+
         if candidate in all_files:
             return candidate
+
+    print(
+        f"[RESOLVE MISS] "
+        f"{import_path} -> {resolved_base}"
+    )
 
     return None
 
@@ -283,12 +360,20 @@ def build_dependency_graph(file_list: list[dict]) -> nx.DiGraph:
     G = nx.DiGraph()
 
     # Build a set of relative paths for fast lookup during resolution
-    all_rel_paths = {f["rel_path"] for f in file_list}
+    all_rel_paths = {
+        f["rel_path"].replace("\\", "/")
+        for f in file_list
+    }
 
     # Add all files as nodes first (even isolated ones with no imports)
     for file_info in file_list:
+        normalized_path = (
+            file_info["rel_path"]
+            .replace("\\", "/")
+        )
+
         G.add_node(
-            file_info["rel_path"],
+            normalized_path,
             language=file_info["language"],
             size=file_info["size"],
         )
@@ -296,7 +381,10 @@ def build_dependency_graph(file_list: list[dict]) -> nx.DiGraph:
     # Now parse each file and add edges
     for file_info in file_list:
         language = file_info["language"]
-        rel_path = file_info["rel_path"]
+        rel_path = (
+            file_info["rel_path"]
+            .replace("\\", "/")
+        )
 
         # Get the right parser
         lang_obj = LANGUAGE_MAP.get(language)
@@ -327,12 +415,37 @@ def build_dependency_graph(file_list: list[dict]) -> nx.DiGraph:
                 if target and target != rel_path:
                     G.add_edge(rel_path, target, weight=1)
 
-        elif language in ("javascript", "typescript"):
-            raw_imports = _get_js_imports(source_bytes, parser)
+        elif language in ("javascript","typescript",):
+
+            raw_imports = _get_js_imports(
+                source_bytes,
+                parser,
+            )
+
+            print(
+                f"[GRAPH] {rel_path} -> "
+                f"{len(raw_imports)} imports"
+            )
+
             for import_path in raw_imports:
-                target = _resolve_js_import(import_path, rel_path, all_rel_paths)
+
+                target = _resolve_js_import(
+                    import_path,
+                    rel_path,
+                    all_rel_paths,
+                )
+
+                print(
+                    f"[GRAPH] "
+                    f"{import_path} -> {target}"
+                )
+
                 if target and target != rel_path:
-                    G.add_edge(rel_path, target, weight=1)
+                    G.add_edge(
+                        rel_path,
+                        target,
+                        weight=1,
+                    )
 
     # Log graph stats — useful for debugging and for interviews
     print(
@@ -379,4 +492,62 @@ def get_graph_stats(G: nx.DiGraph) -> dict:
         "edges":            G.number_of_edges(),
         "cycles":           len(cycles),
         "most_depended_on": most_depended,
+    }
+
+
+def get_architecture_context(
+    G: nx.DiGraph,
+) -> dict:
+
+    entry_points = [
+        node
+        for node in G.nodes
+        if G.in_degree(node) == 0
+    ]
+
+    most_depended_on = sorted(
+        G.in_degree(),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:10]
+
+    largest_modules = sorted(
+        G.out_degree(),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:10]
+
+    top_edges = []
+
+    top_edges = sorted(
+        G.edges(),
+        key=lambda edge: (
+            G.in_degree(edge[1]),
+            G.out_degree(edge[0]),
+        ),
+        reverse=True,
+    )[:50]
+
+    dependencies = [
+        f"{source} -> {target}"
+        for source, target in top_edges
+    ]
+
+    return {
+        "entry_points": entry_points[:10],
+
+        "most_depended_on": [
+            f"{node} ({count} imports)"
+            for node, count in most_depended_on
+        ],
+
+        "largest_modules": [
+            f"{node} ({count} outgoing deps)"
+            for node, count in largest_modules
+        ],
+
+        "dependencies": dependencies,
+
+        "node_count": G.number_of_nodes(),
+        "edge_count": G.number_of_edges(),
     }

@@ -25,10 +25,15 @@ def parse_architecture_response(llm_response: str,) -> tuple[str, str]:
     return summary, mermaid
 
 
-def generate_architecture(chunks: list[dict],) -> tuple[str, str]:
+def generate_architecture(
+    chunks: list[dict],
+    architecture_context: dict,
+) -> tuple[str, str]:
 
-    code_context = format_chunks_for_prompt(chunks)
-
+    code_context = (
+        "Use dependency graph information first. "
+        "Code samples are secondary."
+    )
     files = sorted({
         chunk["file_path"]
         for chunk in chunks
@@ -37,6 +42,20 @@ def generate_architecture(chunks: list[dict],) -> tuple[str, str]:
     repo_structure = "\n".join(files)
 
     prompt = EXPLAIN_ARCHITECTURE.format(
+        node_count=architecture_context["node_count"],
+        edge_count=architecture_context["edge_count"],
+        entry_points="\n".join(
+            architecture_context["entry_points"]
+        ),
+        most_depended_on="\n".join(
+            architecture_context["most_depended_on"]
+        ),
+        largest_modules="\n".join(
+            architecture_context["largest_modules"]
+        ),
+        dependencies="\n".join(
+            architecture_context["dependencies"]
+        ),
         repo_structure=repo_structure,
         code_context=code_context,
     )

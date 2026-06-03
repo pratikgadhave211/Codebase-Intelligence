@@ -87,122 +87,185 @@ Rules:
 """
 
 
-# -----------------------------------------------------------------------
-# EXPLAIN_ARCHITECTURE
-# Used by: api/routes/diagram.py
-# Task: Describe the codebase architecture and return a Mermaid diagram
-# Output: Mermaid flowchart syntax (rendered by frontend with mermaid.js)
-# -----------------------------------------------------------------------
-# EXPLAIN_ARCHITECTURE = """You are a software architect analysing a codebase.
-
-# Below are code chunks from the repository, selected to represent the
-# overall architecture:
-
-# {code_context}
-
-# ---
-
-# Perform two tasks:
-
-# TASK 1 — Architecture Summary:
-# Write 3-5 sentences explaining the overall architecture of this codebase.
-# What does it do? What are the main components? How do they interact?
-
-# TASK 2 — Mermaid Diagram:
-# Generate a Mermaid flowchart showing the main components and their relationships.
-# Use this exact format:
-
-# ```mermaid
-# graph TD
-#     A[ComponentName] --> B[AnotherComponent]
-#     B --> C[ThirdComponent]
-# ```
-
-# Rules:
-# - Use real file/module names from the code context, not generic labels.
-# - Maximum 12 nodes in the diagram — keep it readable.
-# - Include the full mermaid code block with the triple backticks.
-# - Architecture summary FIRST, then the mermaid diagram.
-# """
-
 EXPLAIN_ARCHITECTURE = """You are a senior software architect producing a codebase map.
- 
-Given the code chunks below, output TWO things:
- 
-1. SUMMARY (2–3 sentences, plain English): what this codebase does, its main tech, and its key entry points.
- 
-2. MERMAID DIAGRAM: a high-level architectural flowchart of the repository.
- 
-DIAGRAM RULES — follow exactly or the renderer will break:
 
-- Start the block with: ```mermaid
-- First line inside block: flowchart TD
-- Node IDs: alphanumeric and underscores only
-- Node labels containing spaces must use quotes
-- Every node used in an edge must be defined
-- Use arrows like: A --> B or A -->|"calls"| B
-- Use subgraphs for architectural layers
+Your job is to describe the REAL architecture of the repository.
 
-ARCHITECTURE LIMITS:
+You MUST use information from:
 
-- Show only the most important architectural components
-- Maximum 15 nodes
-- Maximum 25 edges
-- Focus on architecture, not individual files
-- Prefer modules, services, routes, models, databases, and external systems
-- Combine related implementation files into a single architectural node
-- Do NOT attempt to represent every file in the repository
+1. Dependency Graph Analysis
+2. Repository Structure
+3. Code Samples
 
-VALID SUBGRAPHS:
+The Dependency Graph Analysis is the PRIMARY source of truth.
 
-subgraph ENTRY["Entry Points"]
-subgraph API["API / Routes"]
-subgraph CORE["Core Logic"]
-subgraph DATA["Data / Models"]
-subgraph CONFIG["Config"]
-subgraph UTILS["Utilities"]
+--------------------------------------------------
+OUTPUT
+--------------------------------------------------
 
-- No backticks inside node labels
-- End the Mermaid block with ```
+Produce EXACTLY TWO sections:
 
-The Mermaid diagram MUST be syntactically valid Mermaid.
-Do not output explanatory text inside the Mermaid block.
-Do not reference nodes that are not defined.
+SUMMARY: A concise 2-4 sentence explanation of:
 
-IMPORTANT:
+- What the project does
+- Main technologies used
+- Major entry points
+- Major subsystems
 
-Use the Repository Structure section to identify the major modules.
+Then output a Mermaid diagram.
 
-Do NOT create a node for every file.
+--------------------------------------------------
+STRICT RULES
+--------------------------------------------------
 
-Prefer architectural concepts such as:
+Use ONLY components that appear in:
 
-- User Interface
-- API Layer
-- Business Logic
-- AI Services
-- Data Processing
-- PDF Generation
-- External APIs
+- Dependency Graph Analysis
+- Repository Structure
+- Code Samples
+
+DO NOT INVENT:
+
+- Databases
+- Storage layers
+- Service layers
+- Data layers
+- Core logic
+- Backend
+- Frontend
+- API Router
+- Controllers
+- Models
+
+unless they explicitly exist in the repository.
+
+DO NOT create generic architectural labels.
+
+BAD:
+
+- Core Logic
+- Service Layer
+- Data Models
 - Storage
+- Backend
+- Frontend
+- API Router
 
-Use architectural component names instead of file names whenever possible.
-Only use file names for true entry points such as app.py, main.py, server.py, index.ts, or similar startup files.
- 
-RESPOND IN EXACTLY THIS FORMAT — nothing else:
- 
-SUMMARY: <your 2-3 sentence description>
- 
+GOOD:
+
+- webhook_router.py
+- ai_processor.py
+- weather_agent.py
+- market_price_agent.py
+- App.tsx
+- main.py
+
+Prefer actual file/module names from the graph.
+
+If the dependency graph contains:
+
+main.py -> webhook_router.py
+
+then use those nodes directly.
+
+Do NOT rename them.
+
+--------------------------------------------------
+MERMAID RULES
+--------------------------------------------------
+
+Start with:
+
 ```mermaid
+
+First line:
+
 flowchart TD
-<your diagram here>
-```
- 
-Repository Structure:
+
+Node IDs:
+
+- letters
+- numbers
+- underscores only
+
+Valid:
+
+A --> B
+A -->|"calls"| B
+
+Invalid:
+
+A -->|"calls"|> B
+
+Every referenced node must be defined.
+
+Maximum:
+
+- 20 nodes
+- 30 edges
+
+Subgraph names are only visual groupings.
+
+Nodes inside subgraphs MUST be actual repository files or modules.
+
+Example:
+
+subgraph API["API"]
+    webhook_router_py["webhook_router.py"]
+end
+
+Do NOT create nodes named:
+- API
+- Core
+- Backend
+- Frontend
+- Storage
+- Service
+
+The Mermaid diagram must be valid.
+
+--------------------------------------------------
+DEPENDENCY GRAPH ANALYSIS
+--------------------------------------------------
+
+Node Count:
+{node_count}
+
+Edge Count:
+{edge_count}
+
+Entry Points:
+{entry_points}
+
+Most Depended On:
+{most_depended_on}
+
+Largest Modules:
+{largest_modules}
+
+Dependency Edges:
+{dependencies}
+
+--------------------------------------------------
+REPOSITORY STRUCTURE
+--------------------------------------------------
+
 {repo_structure}
 
-Code Samples:
+--------------------------------------------------
+CODE SAMPLES
+--------------------------------------------------
+
 {code_context}
+
+RESPOND IN EXACTLY THIS FORMAT:
+
+SUMMARY: <summary>
+
+```mermaid
+flowchart TD
+...
+```
 """
 
 # -----------------------------------------------------------------------

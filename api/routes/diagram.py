@@ -71,8 +71,12 @@ async def get_diagram(repo_name: str):
             detail=f"No indexed data for '{repo_name}'. Run /ingest first.",
         )
 
-    summary, mermaid = generate_architecture(
-        chunks
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No cached architecture found for "
+            f"'{repo_name}'. Re-ingest the repository."
+        ),
     )
 
     return DiagramResponse(
