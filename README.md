@@ -1,6 +1,6 @@
 # Codebase Intelligence
 
-🔗 Live Demo: https://intellirepo.shivamrathod145.workers.dev/
+🔗 Live Demo: https://codebase-intelligence.shivamrathod145.workers.dev/
 
 An AI-powered repository analysis platform that ingests a GitHub repository, builds a dependency graph, generates architecture diagrams, performs semantic code search, and reviews code for potential issues using Large Language Models.
 
