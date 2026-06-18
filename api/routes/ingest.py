@@ -2,37 +2,30 @@
 api/routes/ingest.py — POST /api/v1/ingest
 
 This is the entry point for the entire system.
-One request triggers: clone → walk → chunk → embed → graph → store.
+Supports two indexing modes:
 
-Flow:
-  1. Validate GitHub URL (cloner does this)
-  2. Clone the repo to /tmp/
-  3. Walk file tree → list of source files
-  4. Chunk each file via AST → list of code chunks
-  5. Embed chunks + store in Qdrant
-  6. Build dependency graph + store in memory cache
-  7. Clean up cloned repo from disk
-  8. Return summary stats
+  1. FULL INDEX (first time):
+     resolve → check SHA → clone → walk → chunk → embed → graph → store
 
-Why clean up the clone in step 7?
-  Railway's disk is limited. Keeping clones around wastes space.
-  All the important data (chunks, embeddings) is now in Qdrant Cloud.
-  The graph is in the in-memory cache (see graph_cache below).
-  We don't need the raw files anymore.
+  2. INCREMENTAL UPDATE (repo already indexed, new commit detected):
+     resolve → check SHA → clone → walk → diff → chunk changed files →
+     delete stale chunks → upsert new chunks → rebuild graph → update metadata
 
-Graph cache:
-  The dependency graph (NetworkX DiGraph) is stored in a module-level
-  dict keyed by repo_name. This is an in-memory cache.
-  Limitation: if Railway restarts, the cache is empty — user must re-ingest.
-  For a demo project this is acceptable. In production you'd serialise
-  the graph to a database.
+  3. UP-TO-DATE (repo already indexed, same commit):
+     resolve → check SHA → return immediately (NO clone, NO download)
 
-Interview talking point:
-  "The ingestion pipeline is sequential by design — each step's output
-  is the next step's input. This makes it easy to debug: if something
-  breaks, the print logs tell you exactly which step failed and why.
-  I clean up the local clone after chunking because all the data I need
-  is persisted in Qdrant Cloud — the raw files are just temporary."
+Key optimization (addressing early-abort):
+  resolve_repo() only does URL validation + a single GitHub API call (~100ms).
+  We compare the returned commit_sha against stored metadata BEFORE calling
+  clone_repo() (which downloads the full zip). This saves bandwidth on the
+  common case where the repo hasn't changed.
+
+Graph rebuild on incremental update:
+  build_dependency_graph() takes the FULL file_list from walker.py and reads
+  each file from disk to parse import statements. Since the full clone is
+  still on disk during the incremental path, the graph builder has access
+  to ALL files (changed + unchanged). The graph is always built from the
+  complete file tree — only the Qdrant embedding step is incremental.
 """
 
 import shutil
@@ -55,10 +48,15 @@ def _force_remove_readonly(func, path, _):
 
 
 from api.models import IngestRequest, IngestResponse, ErrorResponse
-from core.ingestion.cloner import clone_repo
+from core.ingestion.cloner import resolve_repo, clone_repo
 from core.ingestion.walker import walk_repo
 from core.ingestion.chunker import chunk_files
-from core.embeddings.embedder import embed_and_store
+from core.ingestion.diff import compute_file_diff
+from core.embeddings.embedder import (
+    embed_and_store,
+    upsert_chunks,
+    delete_file_chunks,
+)
 from core.graph.builder import (
     build_dependency_graph,
     get_graph_stats,
@@ -74,6 +72,7 @@ from core.llm.architecture import (
 
 from core.storage.repo_metadata import (
     save_repo_metadata,
+    get_repo_metadata,
 )
 
 router = APIRouter()
@@ -89,40 +88,161 @@ router = APIRouter()
 graph_cache: dict = {}
 
 
+def _build_file_hashes(file_list: list[dict]) -> dict[str, str]:
+    """Build a {rel_path: content_hash} map from walker output."""
+    return {f["rel_path"]: f["content_hash"] for f in file_list}
+
+
+def _run_graph_and_architecture(
+    file_list, all_chunks, repo_name, graph_cache,
+    commit_sha, file_hashes,
+):
+    """
+    Shared logic for graph building + architecture generation + metadata save.
+    Used by both full and incremental paths.
+
+    IMPORTANT: build_dependency_graph() takes the FULL file_list and reads
+    each file from disk to parse imports. It does NOT use chunks.
+    This means it always builds the complete dependency graph, even during
+    incremental updates — because the full clone is still on disk at this point.
+
+    The chunks are only used for the architecture LLM summary.
+    """
+    # Build dependency graph from ALL files on disk
+    graph = build_dependency_graph(file_list)
+    stats = get_graph_stats(graph)
+
+    architecture_context = get_architecture_context(graph)
+
+    # Generate architecture summary
+    print(f"[ingest] Generating architecture for '{repo_name}'")
+
+    architecture_chunks = select_architecture_chunks(
+        all_chunks,
+        max_chunks=12,
+    )
+
+    print(f"[ingest] Architecture context: {len(architecture_chunks)} chunks")
+
+    for c in architecture_chunks:
+        print(f"[ARCH] {c['file_path']}")
+
+    summary, mermaid = generate_architecture(
+        architecture_chunks,
+        architecture_context,
+    )
+
+    print(f"[ingest] Architecture generated")
+
+    if summary != "Architecture generation failed.":
+        save_repo_metadata(
+            repo_name=repo_name,
+            summary=summary,
+            mermaid=mermaid,
+            graph_stats=stats,
+            graph_data=serialize_graph(graph),
+            architecture_context=architecture_context,
+            commit_sha=commit_sha,
+            file_hashes=file_hashes,
+        )
+        print(f"[ingest] Metadata persisted")
+    else:
+        print("[ingest] Architecture generation failed — metadata not saved")
+
+    # Store in cache for other routes to access
+    graph_cache[repo_name] = {
+        "graph": graph,
+        "stats": stats,
+    }
+
+    print(f"[ingest] Graph built: {stats['nodes']} nodes, {stats['edges']} edges")
+
+    return stats
+
+
 @router.post(
     "/ingest",
     response_model=IngestResponse,
     summary="Ingest a GitHub repository",
-    description="Clone, parse, embed, and index a public GitHub repository for analysis.",
+    description=(
+        "Clone, parse, embed, and index a public GitHub repository for analysis. "
+        "If the repo was previously indexed, performs an incremental update — "
+        "only re-processing changed files."
+    ),
 )
 async def ingest_repo(request: IngestRequest):
     """
     Full ingestion pipeline for a GitHub repository.
 
-    Steps:
-      1. Clone repo
-      2. Walk + filter source files
-      3. Chunk files via AST
-      4. Embed + store in Qdrant
-      5. Build dependency graph
-      6. Clean up disk
-
-    Returns summary stats on success.
-    Returns 400 on bad URL, 500 on pipeline failure.
+    Three modes:
+      1. First time   → full index (clone → walk → chunk → embed → graph)
+      2. Same commit  → return "already up to date" (NO download)
+      3. New commit   → incremental (diff → chunk changed → upsert/delete)
     """
 
-    # ── Step 1: Clone ──────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 1: RESOLVE (cheap — no download)
+    # Validate URL, parse owner/repo, fetch HEAD commit SHA via GitHub API.
+    # This runs BEFORE any zip download so we can abort early.
+    # ══════════════════════════════════════════════════════════════════
     print(f"\n[ingest] Starting ingestion for: {request.github_url}")
-    clone_result = clone_repo(request.github_url)
+
+    resolve_result = resolve_repo(request.github_url)
+
+    if resolve_result["status"] == "error":
+        raise HTTPException(
+            status_code=400,
+            detail=resolve_result["message"],
+        )
+
+    repo_name  = resolve_result["repo_name"]
+    commit_sha = resolve_result["commit_sha"]
+    owner      = resolve_result["owner"]
+    repo       = resolve_result["repo"]
+
+    print(f"[ingest] Resolved '{owner}/{repo}'")
+    print(f"[ingest] HEAD commit: {commit_sha[:12] + '...' if commit_sha else 'unknown'}")
+
+    # Check if this repo has been indexed before
+    existing_metadata = get_repo_metadata(repo_name)
+    stored_sha = existing_metadata.get("commit_sha") if existing_metadata else None
+    stored_hashes = existing_metadata.get("file_hashes", {}) if existing_metadata else {}
+
+    # ══════════════════════════════════════════════════════════════════
+    # FAST PATH: Already up to date — NO download needed
+    # We compare SHAs BEFORE calling clone_repo() to save bandwidth.
+    # ══════════════════════════════════════════════════════════════════
+    if (
+        commit_sha
+        and stored_sha
+        and commit_sha == stored_sha
+    ):
+        print(f"[ingest] '{repo_name}' is already up to date (commit {commit_sha[:12]})")
+        print(f"[ingest] Skipping download — no bandwidth used")
+
+        return IngestResponse(
+            status="success",
+            repo_name=repo_name,
+            files_indexed=0,
+            chunks_stored=0,
+            graph_ready=repo_name in graph_cache,
+            message=f"'{repo_name}' is already up to date (commit {commit_sha[:12]}...).",
+            incremental=False,
+            commit_sha=commit_sha,
+        )
+
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 2: CLONE (expensive — zip download)
+    # Only reached if: first-time index OR commit SHA differs.
+    # ══════════════════════════════════════════════════════════════════
+    clone_result = clone_repo(request.github_url, owner, repo)
 
     if clone_result["status"] == "error":
-        # 400 Bad Request — invalid URL or private repo
         raise HTTPException(
             status_code=400,
             detail=clone_result["message"],
         )
 
-    repo_name  = clone_result["repo_name"]
     local_path = clone_result["local_path"]
     print(f"[ingest] Cloned '{repo_name}' to {local_path}")
 
@@ -141,100 +261,165 @@ async def ingest_repo(request: IngestRequest):
 
         print(f"[ingest] Found {len(file_list)} source files")
 
-        # ── Step 3: Chunk ──────────────────────────────────────────────
-        all_chunks = chunk_files(file_list)
+        # Build current file hash map
+        current_hashes = _build_file_hashes(file_list)
 
-        if not all_chunks:
-            raise HTTPException(
-                status_code=500,
-                detail="Chunking produced no output. This is unexpected — check logs.",
-            )
+        # ── Decide: full index or incremental ──────────────────────────
+        if existing_metadata and stored_hashes:
+            # ══════════════════════════════════════════════════════════
+            # INCREMENTAL PATH
+            # ══════════════════════════════════════════════════════════
+            print(f"[ingest] Previous index found (commit {stored_sha[:12] if stored_sha else 'unknown'}...)")
+            print(f"[ingest] Running incremental diff...")
 
-        print(f"[ingest] Produced {len(all_chunks)} chunks total")
+            diff = compute_file_diff(file_list, stored_hashes)
 
-        # ── Step 4: Embed + Store ──────────────────────────────────────
-        embed_result = embed_and_store(all_chunks, repo_name)
+            n_added = len(diff["added"])
+            n_modified = len(diff["modified"])
+            n_deleted = len(diff["deleted"])
+            n_unchanged = len(diff["unchanged"])
 
-        if embed_result["status"] == "error":
-            raise HTTPException(
-                status_code=500,
-                detail=f"Embedding failed: {embed_result['message']}",
-            )
-
-        print(f"[ingest] Stored {embed_result['chunks_stored']} chunks in Qdrant")
-
-       # ── Step 5: Build Dependency Graph ─────────────────────────────
-        # Build graph while local files still exist (renderer needs paths)
-        graph = build_dependency_graph(file_list)
-        stats = get_graph_stats(graph)
-
-        architecture_context = (
-            get_architecture_context(
-                graph
-            )
-        )
-
-        # ── Step 5.1: Generate Architecture ───────────────────────────
-        print(
-            f"[ingest] Generating architecture for '{repo_name}'"
-        )
-
-        architecture_chunks = (
-            select_architecture_chunks(
-                all_chunks,
-                max_chunks=12,
-            )
-        )
- 
-        print(
-            f"[ingest] Architecture context: "
-            f"{len(architecture_chunks)} chunks"
-        )
-
-        for c in architecture_chunks:
             print(
-                f"[ARCH] {c['file_path']}"
+                f"[ingest] Diff result: "
+                f"{n_added} added, {n_modified} modified, "
+                f"{n_deleted} deleted, {n_unchanged} unchanged"
             )
 
-        summary, mermaid = generate_architecture(
-            architecture_chunks,
-            architecture_context,
-        )
+            # If nothing changed (commit SHA differed but file content is identical)
+            if n_added == 0 and n_modified == 0 and n_deleted == 0:
+                print(f"[ingest] No file content changes detected — skipping re-index")
+                # Still update the commit SHA so next check is faster
+                if existing_metadata and commit_sha:
+                    save_repo_metadata(
+                        repo_name=repo_name,
+                        summary=existing_metadata.get("summary", ""),
+                        mermaid=existing_metadata.get("mermaid", ""),
+                        graph_stats=existing_metadata.get("graph_stats", {}),
+                        graph_data=existing_metadata.get("graph_data", {}),
+                        architecture_context=existing_metadata.get("architecture_context"),
+                        commit_sha=commit_sha,
+                        file_hashes=current_hashes,
+                    )
+                return IngestResponse(
+                    status="success",
+                    repo_name=repo_name,
+                    files_indexed=len(file_list),
+                    chunks_stored=0,
+                    graph_ready=repo_name in graph_cache,
+                    message=f"'{repo_name}' content unchanged — metadata updated.",
+                    incremental=True,
+                    files_added=0,
+                    files_modified=0,
+                    files_deleted=0,
+                    commit_sha=commit_sha,
+                )
 
-        print(
-            f"[ingest] Architecture generated"
-        )
+            # ── Delete stale chunks ────────────────────────────────────
+            # For modified files: delete old chunks first, then upsert new ones.
+            # This is necessary because a modified file might produce different
+            # chunks (function renamed, split, etc.)
+            files_to_delete = diff["deleted"] + [f["rel_path"] for f in diff["modified"]]
+            if files_to_delete:
+                delete_file_chunks(repo_name, files_to_delete)
+                print(f"[ingest] Deleted stale chunks for {len(files_to_delete)} files")
 
-        if summary != "Architecture generation failed.":
-            save_repo_metadata(
+            # ── Chunk and upsert ONLY changed files ────────────────────
+            files_to_chunk = diff["added"] + diff["modified"]
+            new_chunks = chunk_files(files_to_chunk)
+
+            chunks_stored = 0
+            if new_chunks:
+                upsert_result = upsert_chunks(new_chunks, repo_name)
+                if upsert_result["status"] == "error":
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Upsert failed: {upsert_result['message']}",
+                    )
+                chunks_stored = upsert_result["chunks_stored"]
+
+            print(f"[ingest] Incremental update: {chunks_stored} chunks upserted")
+
+            # ── Rebuild graph + architecture ───────────────────────────
+            # Graph: build_dependency_graph() takes the FULL file_list and
+            # reads ALL files from disk to parse import statements. Since
+            # the full clone is still on disk, this always produces the
+            # complete, correct global dependency graph.
+            #
+            # Architecture LLM: needs representative chunks. We chunk ALL
+            # files for this (including unchanged) so the LLM sees the
+            # full picture. These unchanged-file chunks are NOT sent to
+            # Qdrant (they're already stored there from the previous run).
+            all_chunks_for_architecture = new_chunks + chunk_files(diff["unchanged"])
+
+            _run_graph_and_architecture(
+                file_list, all_chunks_for_architecture, repo_name, graph_cache,
+                commit_sha, current_hashes,
+            )
+
+            return IngestResponse(
+                status="success",
                 repo_name=repo_name,
-                summary=summary,
-                mermaid=mermaid,
-                graph_stats=stats,
-                graph_data=serialize_graph(graph),
-                architecture_context=architecture_context,
+                files_indexed=len(file_list),
+                chunks_stored=chunks_stored,
+                graph_ready=True,
+                message=(
+                    f"'{repo_name}' incrementally updated: "
+                    f"{n_added} added, {n_modified} modified, {n_deleted} deleted."
+                ),
+                incremental=True,
+                files_added=n_added,
+                files_modified=n_modified,
+                files_deleted=n_deleted,
+                commit_sha=commit_sha,
             )
 
-            print(
-                f"[ingest] Metadata persisted" 
-            )
-        
         else:
-            print(
-                "[ingest] Architecture generation failed "
-                "- metadata not saved"
+            # ══════════════════════════════════════════════════════════
+            # FULL INDEX PATH (first time or no stored hashes)
+            # ══════════════════════════════════════════════════════════
+            print(f"[ingest] No previous index — running full ingestion")
+
+            # ── Step 3: Chunk ──────────────────────────────────────────
+            all_chunks = chunk_files(file_list)
+
+            if not all_chunks:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Chunking produced no output. This is unexpected — check logs.",
+                )
+
+            print(f"[ingest] Produced {len(all_chunks)} chunks total")
+
+            # ── Step 4: Embed + Store ──────────────────────────────────
+            embed_result = embed_and_store(all_chunks, repo_name)
+
+            if embed_result["status"] == "error":
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Embedding failed: {embed_result['message']}",
+                )
+
+            print(f"[ingest] Stored {embed_result['chunks_stored']} chunks in Qdrant")
+
+            # ── Step 5: Graph + Architecture + Metadata ────────────────
+            _run_graph_and_architecture(
+                file_list, all_chunks, repo_name, graph_cache,
+                commit_sha, current_hashes,
             )
 
-        # Store in cache for other routes to access
-        graph_cache[repo_name] = {
-            "graph": graph,
-            "stats": stats,
-        }
-
-        print(f"[ingest] Graph built: {stats['nodes']} nodes, {stats['edges']} edges")
+            return IngestResponse(
+                status="success",
+                repo_name=repo_name,
+                files_indexed=len(file_list),
+                chunks_stored=embed_result["chunks_stored"],
+                graph_ready=True,
+                message=f"'{repo_name}' indexed successfully. Ready for analysis.",
+                incremental=False,
+                commit_sha=commit_sha,
+            )
 
     finally:
-        # ── Step 6: Clean up clone ─────────────────────────────────────
+        # ── Cleanup: remove cloned repo from disk ──────────────────────
         # Always runs — even if an exception was raised above.
         # This prevents disk accumulation on Railway even after errors.
         try:
@@ -242,12 +427,3 @@ async def ingest_repo(request: IngestRequest):
             print(f"[ingest] Cleaned up {local_path}")
         except Exception:
             pass  # cleanup failure is non-critical
-
-    return IngestResponse(
-        status="success",
-        repo_name=repo_name,
-        files_indexed=len(file_list),
-        chunks_stored=embed_result["chunks_stored"],
-        graph_ready=True,
-        message=f"'{repo_name}' indexed successfully. Ready for analysis.",
-    )

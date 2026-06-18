@@ -17,6 +17,7 @@ env/
 
 # Cloned repos — can be huge, always regenerated
 tmp/
+temp/
 
 # IDE
 .vscode/
@@ -25,3 +26,12 @@ tmp/
 # OS
 .DS_Store
 Thumbs.db
+
+# AI related
+.agents
+.cache
+.pycache
+.claude
+.knowledgebase
+.fastembed
+.qdrant

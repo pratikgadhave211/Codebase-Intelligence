@@ -60,10 +60,15 @@ def save_repo_metadata(
     graph_stats,
     graph_data,
     architecture_context=None,
+    commit_sha=None,
+    file_hashes=None,
 ):
     """
     Store architecture + graph artifacts for a repository.
     Existing repo metadata is overwritten.
+
+    commit_sha:  The HEAD commit SHA at index time (for incremental indexing).
+    file_hashes: Dict of {rel_path: sha256_hex} for every indexed file.
     """
 
     ensure_metadata_collection()
@@ -83,6 +88,8 @@ def save_repo_metadata(
             "graph_stats": graph_stats,
             "graph_data": graph_data,
             "architecture_context": architecture_context,
+            "commit_sha": commit_sha,
+            "file_hashes": file_hashes or {},
         },
     )
 
@@ -94,6 +101,7 @@ def save_repo_metadata(
 
     print(
         f"[repo_metadata.py] Stored metadata for '{repo_name}'"
+        f" (commit: {commit_sha[:8] + '...' if commit_sha else 'N/A'})"
     )
 
 

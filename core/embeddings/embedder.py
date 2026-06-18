@@ -1,22 +1,30 @@
 """
 core/embeddings/embedder.py — Embeds code chunks and stores them in Qdrant.
 
-Key fix from original version:
-  We removed _ensure_collection() which manually created collections with
-  explicit VectorParams. This conflicted with _qdrant.add() which uses
-  FastEmbed and creates its own collection format internally.
+Supports two indexing modes:
+  1. Full index  — first-time ingestion. Deletes stale collection, creates fresh.
+  2. Incremental — re-ingestion after a commit. Upserts changed chunks, deletes
+                   stale ones by file_path filter.
 
-  Correct approach:
-    1. Delete existing collection if present (clean slate)
-    2. Call _qdrant.add() directly — it creates the collection automatically
-       with the correct vector config for the FastEmbed model being used.
+Key design decision: deterministic point IDs.
+  Old approach: sequential ints (0, 1, 2, ...) — different on every run.
+  New approach: MD5 hash of (repo_name, file_path, chunk_name, start_line).
+  This means the same code chunk always gets the same ID, enabling upserts
+  (Qdrant overwrites existing points with matching IDs) and targeted deletes.
 
-  Never manually create a collection AND use _qdrant.add() together.
-  Pick one. We pick _qdrant.add() because it handles everything.
+Note on _qdrant.add() vs _qdrant.upsert():
+  _qdrant.add() is the FastEmbed-integrated method — it embeds text AND stores.
+  _qdrant.upsert() stores pre-computed vectors. We use add() because we want
+  FastEmbed to handle embedding transparently.
 """
+
+import hashlib
+import os
+import shutil
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.http.models import PayloadSchemaType
 
 from config import QDRANT_URL, QDRANT_API_KEY
 
@@ -29,9 +37,108 @@ _qdrant = QdrantClient(
 )
 
 
+def _cleanup_fastembed_cache():
+    """
+    Workaround for fastembed 0.2.6 bug on Windows.
+
+    FastEmbed downloads the model to a temp dir (`tmp/fast-bge-small-en`)
+    then does os.rename() to the final path (`fast-bge-small-en`).
+    On Windows, os.rename() raises [WinError 183] if the TARGET already
+    exists (from a previous run). We must remove BOTH:
+      - The stale destination dir (so rename succeeds)
+      - The stale tmp dir (so download doesn't conflict)
+    """
+    import tempfile
+    cache_dir = os.environ.get(
+        "FASTEMBED_CACHE_PATH",
+        os.path.join(tempfile.gettempdir(), "fastembed_cache"),
+    )
+
+    # Delete stale destination model dir (the rename TARGET)
+    model_dir = os.path.join(cache_dir, "fast-bge-small-en")
+    if os.path.exists(model_dir):
+        try:
+            shutil.rmtree(model_dir)
+            print(f"[embedder.py] Cleaned stale fastembed model dir: {model_dir}")
+        except Exception:
+            pass
+
+    # Delete stale tmp dir (the rename SOURCE)
+    tmp_dir = os.path.join(cache_dir, "tmp")
+    if os.path.exists(tmp_dir):
+        try:
+            shutil.rmtree(tmp_dir)
+            print(f"[embedder.py] Cleaned stale fastembed temp dir: {tmp_dir}")
+        except Exception:
+            pass
+
+
+def _chunk_id(repo_name: str, file_path: str, chunk_name: str, start_line: int) -> str:
+    """
+    Deterministic ID for a chunk — same input always produces the same ID.
+
+    This is critical for incremental indexing: when a file is re-chunked,
+    unchanged chunks get the same ID and are simply overwritten (no-op),
+    while new/changed chunks get new IDs and are inserted.
+
+    Uses MD5 hex digest (32 chars) — Qdrant accepts string IDs.
+    """
+    raw = f"{repo_name}:{file_path}:{chunk_name}:{start_line}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+
+def _build_ids_and_payloads(chunks: list[dict], repo_name: str):
+    """
+    Build deterministic IDs and payloads for a list of chunks.
+    Shared by both full-index and incremental paths.
+    """
+    ids = []
+    payloads = []
+    texts = []
+
+    for chunk in chunks:
+        chunk_id = _chunk_id(
+            repo_name,
+            chunk["file_path"],
+            chunk["name"],
+            chunk["start_line"],
+        )
+        ids.append(chunk_id)
+        texts.append(chunk["text"])
+        payloads.append({
+            "text":       chunk["text"],
+            "file_path":  chunk["file_path"],
+            "chunk_type": chunk["chunk_type"],
+            "name":       chunk["name"],
+            "start_line": chunk["start_line"],
+            "end_line":   chunk["end_line"],
+            "language":   chunk["language"],
+            "repo_name":  repo_name,
+        })
+
+    return ids, texts, payloads
+
+
+def _ensure_payload_index(collection_name: str) -> None:
+    """
+    Create a keyword index on file_path so filter-based deletes are fast.
+    Without this, Qdrant does a full scan on every delete-by-filter call.
+    Idempotent — safe to call multiple times.
+    """
+    try:
+        _qdrant.create_payload_index(
+            collection_name=collection_name,
+            field_name="file_path",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+    except Exception:
+        # Index might already exist — that's fine
+        pass
+
+
 def _delete_if_exists(collection_name: str) -> None:
     """
-    Delete a collection if it exists — clean slate for re-indexing.
+    Delete a collection if it exists — clean slate for full re-indexing.
     If it doesn't exist, do nothing.
 
     We DON'T recreate it here — _qdrant.add() creates it automatically
@@ -48,14 +155,10 @@ def _delete_if_exists(collection_name: str) -> None:
 
 def embed_and_store(chunks: list[dict], repo_name: str) -> dict:
     """
-    Embed code chunks using FastEmbed and store in Qdrant.
+    Full index path — embed ALL chunks and store in a fresh Qdrant collection.
 
-    _qdrant.add() does three things internally:
-      1. Embeds each document using BAAI/bge-small-en-v1.5 (FastEmbed)
-      2. Creates the Qdrant collection if it doesn't exist
-      3. Upserts all points (vector + payload) into the collection
-
-    We only need to ensure no stale collection exists before calling it.
+    Used for first-time ingestion of a repo. Deletes any existing collection
+    and rebuilds from scratch with deterministic IDs.
     """
 
     if not chunks:
@@ -78,27 +181,12 @@ def embed_and_store(chunks: list[dict], repo_name: str) -> dict:
     # Delete stale collection — let _qdrant.add() recreate with correct params
     _delete_if_exists(repo_name)
 
-    texts = [chunk["text"] for chunk in chunks]
-
-    payloads = [
-        {
-            "text":       chunk["text"],
-            "file_path":  chunk["file_path"],
-            "chunk_type": chunk["chunk_type"],
-            "name":       chunk["name"],
-            "start_line": chunk["start_line"],
-            "end_line":   chunk["end_line"],
-            "language":   chunk["language"],
-            "repo_name":  repo_name,
-        }
-        for chunk in chunks
-    ]
-
-    ids = list(range(len(chunks)))
+    ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name)
 
     try:
         print(f"[embedder.py] Embedding {len(chunks)} chunks (first run downloads ~130MB model)...")
 
+        _cleanup_fastembed_cache()
         _qdrant.add(
             collection_name=repo_name,
             documents=texts,
@@ -106,6 +194,9 @@ def embed_and_store(chunks: list[dict], repo_name: str) -> dict:
             ids=ids,
             batch_size=100,
         )
+
+        # Create payload index for efficient filter-based deletes later
+        _ensure_payload_index(repo_name)
 
         print(f"[embedder.py] Stored {len(chunks)} chunks in '{repo_name}'")
         return {
@@ -126,3 +217,98 @@ def embed_and_store(chunks: list[dict], repo_name: str) -> dict:
             "message": f"Embedding/storage failed: {str(e)}",
             "chunks_stored": 0,
         }
+
+
+def upsert_chunks(chunks: list[dict], repo_name: str) -> dict:
+    """
+    Incremental path — embed and upsert only the given chunks.
+
+    Used when re-indexing a repo that has changed. Only the added/modified
+    files are chunked and passed here. Qdrant treats matching IDs as
+    overwrites (upserts).
+    """
+    if not chunks:
+        return {
+            "status": "success",
+            "repo_name": repo_name,
+            "chunks_stored": 0,
+        }
+
+    ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name)
+
+    try:
+        print(f"[embedder.py] Upserting {len(chunks)} chunks into '{repo_name}'...")
+
+        _cleanup_fastembed_cache()
+        _qdrant.add(
+            collection_name=repo_name,
+            documents=texts,
+            metadata=payloads,
+            ids=ids,
+            batch_size=100,
+        )
+
+        print(f"[embedder.py] Upserted {len(chunks)} chunks in '{repo_name}'")
+        return {
+            "status":        "success",
+            "repo_name":     repo_name,
+            "chunks_stored": len(chunks),
+        }
+
+    except UnexpectedResponse as e:
+        return {
+            "status":  "error",
+            "message": f"Qdrant rejected the upsert: {str(e)}",
+            "chunks_stored": 0,
+        }
+    except Exception as e:
+        return {
+            "status":  "error",
+            "message": f"Upsert failed: {str(e)}",
+            "chunks_stored": 0,
+        }
+
+
+def delete_file_chunks(repo_name: str, file_paths: list[str]) -> int:
+    """
+    Delete all Qdrant points belonging to the given file paths.
+
+    Used during incremental indexing to remove chunks from:
+      - Deleted files (file no longer exists in the repo)
+      - Modified files (old chunks removed before upserting new ones,
+        since a modified file may produce different chunks)
+
+    Uses a payload filter on file_path, which is indexed as a keyword
+    for fast lookups (see _ensure_payload_index).
+    """
+    if not file_paths:
+        return 0
+
+    try:
+        from qdrant_client.models import (
+            Filter,
+            FieldCondition,
+            MatchAny,
+        )
+
+        _qdrant.delete(
+            collection_name=repo_name,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="file_path",
+                        match=MatchAny(any=file_paths),
+                    )
+                ]
+            ),
+        )
+
+        print(
+            f"[embedder.py] Deleted chunks for {len(file_paths)} files "
+            f"from '{repo_name}'"
+        )
+        return len(file_paths)
+
+    except Exception as e:
+        print(f"[embedder.py] Failed to delete file chunks: {e}")
+        return 0

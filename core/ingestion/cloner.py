@@ -17,7 +17,43 @@ import tempfile
 
 import requests
 
-from config import TMP_DIR
+from config import TMP_DIR, GITHUB_TOKEN
+
+
+def fetch_head_commit(owner: str, repo: str) -> str | None:
+    """
+    Fetch the latest commit SHA on the default branch via GitHub API.
+
+    Returns the SHA hex string, or None on any failure.
+    When None, the ingestion pipeline gracefully falls back to a full re-index
+    (since it can't compare commits without a SHA).
+
+    Rate limits:
+      - Unauthenticated: 60 requests/hour
+      - With GITHUB_TOKEN: 5,000 requests/hour
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    try:
+        resp = requests.get(
+            url, headers=headers, params={"per_page": 1}, timeout=10
+        )
+        if resp.status_code == 200:
+            commits = resp.json()
+            if commits:
+                return commits[0]["sha"]
+        else:
+            print(
+                f"[cloner.py] GitHub API returned {resp.status_code} "
+                f"for commit lookup — will do full index"
+            )
+    except Exception as e:
+        print(f"[cloner.py] Failed to fetch HEAD commit: {e}")
+
+    return None
 
 
 def _force_remove_readonly(func, path, _):
@@ -53,18 +89,26 @@ def validate_github_url(url: str) -> bool:
     return bool(re.match(pattern, clean_url))
 
 
-def clone_repo(github_url: str) -> dict:
+def resolve_repo(github_url: str) -> dict:
     """
-    Download a public GitHub repo as a zip via GitHub API.
-    No git binary required — works on any container.
+    Phase 1: Validate URL, parse owner/repo, and fetch HEAD commit SHA.
+
+    This is CHEAP — no download, just a single GitHub API call.
+    The caller can use the returned commit_sha to compare against
+    stored metadata and abort early if the repo is already up to date,
+    saving the bandwidth of downloading the full zip.
+
+    Returns dict with keys: status, message, owner, repo, repo_name, commit_sha.
     """
 
     if not validate_github_url(github_url):
         return {
             "status": "error",
             "message": f"Invalid GitHub URL: '{github_url}'. Expected: https://github.com/owner/repo",
+            "owner": None,
+            "repo": None,
             "repo_name": None,
-            "local_path": None,
+            "commit_sha": None,
         }
 
     try:
@@ -73,9 +117,35 @@ def clone_repo(github_url: str) -> dict:
         return {
             "status": "error",
             "message": f"Could not parse owner/repo from URL: {github_url}",
+            "owner": None,
+            "repo": None,
             "repo_name": None,
-            "local_path": None,
+            "commit_sha": None,
         }
+
+    # Fetch HEAD commit SHA — lightweight API call (~100ms)
+    commit_sha = fetch_head_commit(owner, repo)
+
+    return {
+        "status": "resolved",
+        "message": f"Resolved '{owner}/{repo}'",
+        "owner": owner,
+        "repo": repo,
+        "repo_name": repo,
+        "commit_sha": commit_sha,
+    }
+
+
+def clone_repo(github_url: str, owner: str, repo: str) -> dict:
+    """
+    Phase 2: Download the repo as a zip via GitHub API.
+
+    Only called AFTER resolve_repo() and after confirming we actually
+    need to download (commit SHA differs from stored). This saves
+    bandwidth on the common case where the repo hasn't changed.
+
+    No git binary required — works on any container.
+    """
 
     repo_name = repo
     local_path = os.path.join(TMP_DIR, repo_name)

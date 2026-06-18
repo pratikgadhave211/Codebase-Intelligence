@@ -32,6 +32,14 @@ load_dotenv()
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 
 # -----------------------------------------------------------------------
+# GITHUB_TOKEN (optional)
+# Authenticates GitHub API requests to raise rate limit from 60 to 5,000/hr.
+# Get one at: github.com → Settings → Developer settings → Personal access tokens
+# Only needed if you re-index repos frequently.
+# -----------------------------------------------------------------------
+GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
+
+# -----------------------------------------------------------------------
 # QDRANT_URL
 # The URL of your Qdrant Cloud cluster.
 # Format: https://xxxx-xxxx.aws.cloud.qdrant.io

@@ -25,6 +25,7 @@ Interview talking point:
 """
 
 import os
+import hashlib
 from config import MAX_FILES
 
 # -----------------------------------------------------------------------
@@ -208,11 +209,22 @@ def walk_repo(local_path: str) -> list[dict]:
                 print(f"[walker.py] Skipping large file: {rel_path} ({size} bytes)")
                 continue
 
+            # Compute SHA-256 content hash for incremental indexing.
+            # This is the ground truth for "did this file actually change?"
+            # Two commits might touch file metadata without changing content;
+            # the hash catches that and avoids unnecessary re-embedding.
+            try:
+                with open(full_path, "rb") as fh:
+                    content_hash = hashlib.sha256(fh.read()).hexdigest()
+            except OSError:
+                continue
+
             found_files.append({
-                "path":     full_path,
-                "rel_path": rel_path,
-                "language": SUPPORTED_EXTENSIONS[ext],
-                "size":     size,
+                "path":         full_path,
+                "rel_path":     rel_path,
+                "language":     SUPPORTED_EXTENSIONS[ext],
+                "size":         size,
+                "content_hash": content_hash,
             })
 
     print(f"[walker.py] Found {len(found_files)} source files in {local_path}")

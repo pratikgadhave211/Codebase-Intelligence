@@ -43,6 +43,11 @@ class IngestResponse(BaseModel):
     chunks_stored: int = Field(..., description="Number of code chunks embedded and stored.")
     graph_ready: bool = Field(..., description="True if dependency graph was built.")
     message: str = Field(..., example="Repository indexed successfully.")
+    incremental: bool = Field(False, description="True if this was an incremental update, not a full re-index.")
+    files_added: int = Field(0, description="Number of new files indexed (incremental only).")
+    files_modified: int = Field(0, description="Number of modified files re-indexed (incremental only).")
+    files_deleted: int = Field(0, description="Number of deleted files removed (incremental only).")
+    commit_sha: Optional[str] = Field(None, description="The HEAD commit SHA that was indexed.")
 
 
 # -----------------------------------------------------------------------
