@@ -51,14 +51,18 @@ def retrieve_chunks(
     query: str,
     repo_name: str,
     top_k: int = DEFAULT_TOP_K,
+    commit_hash: str | None = None,
+    collection_name: str | None = None,
 ) -> list[dict]:
     """
     Embed a query and return the top-k most relevant chunks from Qdrant.
 
     Args:
-        query     : Natural language question or search term
-        repo_name : Qdrant collection to search in (= repo name from cloner)
-        top_k     : Number of chunks to return
+        query           : Natural language question or search term
+        repo_name       : Qdrant collection to search in (= repo name from cloner)
+        top_k           : Number of chunks to return
+        commit_hash     : If provided, filter results to only this commit's chunks
+        collection_name : Override collection name (for versioned collections)
 
     Returns:
         List of chunk dicts, each containing:
@@ -73,20 +77,15 @@ def retrieve_chunks(
             "score":      0.87,   ← cosine similarity (0.0 to 1.0)
         }
         Returns empty list on any error — never raises.
-
-    How _qdrant.query() works:
-        It embeds the query text using FastEmbed (same model as indexing),
-        then searches the collection for the nearest vectors using
-        cosine similarity. Returns ScoredPoint objects with .payload and .score.
     """
+    coll = collection_name or repo_name
 
-    # First check the collection exists — gives a clearer error than
-    # the cryptic Qdrant "collection not found" exception
+    # First check the collection exists
     try:
         existing = [c.name for c in _qdrant.get_collections().collections]
-        if repo_name not in existing:
+        if coll not in existing:
             print(
-                f"[retriever.py] Collection '{repo_name}' not found. "
+                f"[retriever.py] Collection '{coll}' not found. "
                 f"Has this repo been ingested yet?"
             )
             return []
@@ -94,14 +93,25 @@ def retrieve_chunks(
         print(f"[retriever.py] Cannot connect to Qdrant: {e}")
         return []
 
+    # Build optional filter for commit_hash
+    query_filter = None
+    if commit_hash:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        query_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="commit_hash",
+                    match=MatchValue(value=commit_hash),
+                )
+            ]
+        )
+
     # Perform semantic search
     try:
-        # _qdrant.query() is the FastEmbed-integrated search method.
-        # It handles embedding the query internally.
-        # query_text  → gets embedded → vector search → top_k results
         results = _qdrant.query(
-            collection_name=repo_name,
+            collection_name=coll,
             query_text=query,
+            query_filter=query_filter,
             limit=top_k,
         )
 

@@ -79,13 +79,35 @@ router = APIRouter()
 
 # -----------------------------------------------------------------------
 # In-memory graph cache.
-# Key:   repo_name (str)
+# Key:   collection_name (str) — may include branch/commit suffix
 # Value: dict with "graph" (nx.DiGraph) and "html" (str) and "stats" (dict)
-#
-# Stored here (module level) so all routes can import and use it.
-# graph_cache is imported by routes/graph.py, routes/bugs.py, etc.
 # -----------------------------------------------------------------------
 graph_cache: dict = {}
+
+
+def _build_collection_name(
+    repo_name: str,
+    branch: str | None = None,
+    commit_hash: str | None = None,
+) -> str:
+    """
+    Build a versioned Qdrant collection name.
+
+    Examples:
+      - repo_name="fastapi", branch=None, commit=None → "fastapi"
+      - repo_name="fastapi", branch="develop"          → "fastapi__develop"
+      - repo_name="fastapi", commit_hash="abc123..."   → "fastapi__abc123de"
+
+    The double-underscore separator avoids collisions with repo names
+    that contain single underscores (common in GitHub).
+    """
+    if commit_hash:
+        return f"{repo_name}__{commit_hash[:8]}"
+    elif branch:
+        # Sanitize branch name for Qdrant (no slashes, spaces)
+        safe_branch = branch.replace("/", "-").replace(" ", "-")
+        return f"{repo_name}__{safe_branch}"
+    return repo_name
 
 
 def _build_file_hashes(file_list: list[dict]) -> dict[str, str]:
@@ -167,7 +189,8 @@ def _run_graph_and_architecture(
     description=(
         "Clone, parse, embed, and index a public GitHub repository for analysis. "
         "If the repo was previously indexed, performs an incremental update — "
-        "only re-processing changed files."
+        "only re-processing changed files. Optionally specify a branch or commit_hash "
+        "to index a specific version."
     ),
 )
 async def ingest_repo(request: IngestRequest):
@@ -178,16 +201,30 @@ async def ingest_repo(request: IngestRequest):
       1. First time   → full index (clone → walk → chunk → embed → graph)
       2. Same commit  → return "already up to date" (NO download)
       3. New commit   → incremental (diff → chunk changed → upsert/delete)
+
+    Optional: pass branch or commit_hash to index a specific version.
     """
 
     # ══════════════════════════════════════════════════════════════════
     # PHASE 1: RESOLVE (cheap — no download)
-    # Validate URL, parse owner/repo, fetch HEAD commit SHA via GitHub API.
-    # This runs BEFORE any zip download so we can abort early.
+    # Validate URL, parse owner/repo, resolve commit SHA via GitHub API.
+    # If commit_hash is provided, validates it exists (hard 400 on invalid).
     # ══════════════════════════════════════════════════════════════════
     print(f"\n[ingest] Starting ingestion for: {request.github_url}")
+    if request.branch:
+        print(f"[ingest] Targeting branch: {request.branch}")
+    if request.commit_hash:
+        print(f"[ingest] Targeting commit: {request.commit_hash[:12]}...")
 
-    resolve_result = resolve_repo(request.github_url)
+    try:
+        resolve_result = resolve_repo(
+            request.github_url,
+            branch=request.branch,
+            commit_hash=request.commit_hash,
+        )
+    except ValueError as e:
+        # validate_commit_hash or fetch_branch_head raised — hard 400
+        raise HTTPException(status_code=400, detail=str(e))
 
     if resolve_result["status"] == "error":
         raise HTTPException(
@@ -199,12 +236,17 @@ async def ingest_repo(request: IngestRequest):
     commit_sha = resolve_result["commit_sha"]
     owner      = resolve_result["owner"]
     repo       = resolve_result["repo"]
+    branch     = resolve_result.get("branch")
+
+    # Build versioned collection name
+    collection_name = _build_collection_name(repo_name, branch, request.commit_hash)
 
     print(f"[ingest] Resolved '{owner}/{repo}'")
-    print(f"[ingest] HEAD commit: {commit_sha[:12] + '...' if commit_sha else 'unknown'}")
+    print(f"[ingest] Commit: {commit_sha[:12] + '...' if commit_sha else 'unknown'}")
+    print(f"[ingest] Collection: '{collection_name}'")
 
-    # Check if this repo has been indexed before
-    existing_metadata = get_repo_metadata(repo_name)
+    # Check if this version has been indexed before
+    existing_metadata = get_repo_metadata(collection_name)
     stored_sha = existing_metadata.get("commit_sha") if existing_metadata else None
     stored_hashes = existing_metadata.get("file_hashes", {}) if existing_metadata else {}
 
@@ -217,16 +259,16 @@ async def ingest_repo(request: IngestRequest):
         and stored_sha
         and commit_sha == stored_sha
     ):
-        print(f"[ingest] '{repo_name}' is already up to date (commit {commit_sha[:12]})")
+        print(f"[ingest] '{collection_name}' is already up to date (commit {commit_sha[:12]})")
         print(f"[ingest] Skipping download — no bandwidth used")
 
         return IngestResponse(
             status="success",
-            repo_name=repo_name,
+            repo_name=collection_name,
             files_indexed=0,
             chunks_stored=0,
-            graph_ready=repo_name in graph_cache,
-            message=f"'{repo_name}' is already up to date (commit {commit_sha[:12]}...).",
+            graph_ready=collection_name in graph_cache,
+            message=f"'{collection_name}' is already up to date (commit {commit_sha[:12]}...).",
             incremental=False,
             commit_sha=commit_sha,
         )
@@ -235,7 +277,11 @@ async def ingest_repo(request: IngestRequest):
     # PHASE 2: CLONE (expensive — zip download)
     # Only reached if: first-time index OR commit SHA differs.
     # ══════════════════════════════════════════════════════════════════
-    clone_result = clone_repo(request.github_url, owner, repo)
+    clone_result = clone_repo(
+        request.github_url, owner, repo,
+        branch=request.branch,
+        commit_hash=request.commit_hash,
+    )
 
     if clone_result["status"] == "error":
         raise HTTPException(
@@ -291,7 +337,7 @@ async def ingest_repo(request: IngestRequest):
                 # Still update the commit SHA so next check is faster
                 if existing_metadata and commit_sha:
                     save_repo_metadata(
-                        repo_name=repo_name,
+                        repo_name=collection_name,
                         summary=existing_metadata.get("summary", ""),
                         mermaid=existing_metadata.get("mermaid", ""),
                         graph_stats=existing_metadata.get("graph_stats", {}),
@@ -302,11 +348,11 @@ async def ingest_repo(request: IngestRequest):
                     )
                 return IngestResponse(
                     status="success",
-                    repo_name=repo_name,
+                    repo_name=collection_name,
                     files_indexed=len(file_list),
                     chunks_stored=0,
-                    graph_ready=repo_name in graph_cache,
-                    message=f"'{repo_name}' content unchanged — metadata updated.",
+                    graph_ready=collection_name in graph_cache,
+                    message=f"'{collection_name}' content unchanged — metadata updated.",
                     incremental=True,
                     files_added=0,
                     files_modified=0,
@@ -320,7 +366,7 @@ async def ingest_repo(request: IngestRequest):
             # chunks (function renamed, split, etc.)
             files_to_delete = diff["deleted"] + [f["rel_path"] for f in diff["modified"]]
             if files_to_delete:
-                delete_file_chunks(repo_name, files_to_delete)
+                delete_file_chunks(collection_name, files_to_delete)
                 print(f"[ingest] Deleted stale chunks for {len(files_to_delete)} files")
 
             # ── Chunk and upsert ONLY changed files ────────────────────
@@ -329,7 +375,11 @@ async def ingest_repo(request: IngestRequest):
 
             chunks_stored = 0
             if new_chunks:
-                upsert_result = upsert_chunks(new_chunks, repo_name)
+                upsert_result = upsert_chunks(
+                    new_chunks, collection_name,
+                    commit_hash=commit_sha,
+                    collection_name=collection_name,
+                )
                 if upsert_result["status"] == "error":
                     raise HTTPException(
                         status_code=500,
@@ -352,18 +402,18 @@ async def ingest_repo(request: IngestRequest):
             all_chunks_for_architecture = new_chunks + chunk_files(diff["unchanged"])
 
             _run_graph_and_architecture(
-                file_list, all_chunks_for_architecture, repo_name, graph_cache,
+                file_list, all_chunks_for_architecture, collection_name, graph_cache,
                 commit_sha, current_hashes,
             )
 
             return IngestResponse(
                 status="success",
-                repo_name=repo_name,
+                repo_name=collection_name,
                 files_indexed=len(file_list),
                 chunks_stored=chunks_stored,
                 graph_ready=True,
                 message=(
-                    f"'{repo_name}' incrementally updated: "
+                    f"'{collection_name}' incrementally updated: "
                     f"{n_added} added, {n_modified} modified, {n_deleted} deleted."
                 ),
                 incremental=True,
@@ -391,7 +441,11 @@ async def ingest_repo(request: IngestRequest):
             print(f"[ingest] Produced {len(all_chunks)} chunks total")
 
             # ── Step 4: Embed + Store ──────────────────────────────────
-            embed_result = embed_and_store(all_chunks, repo_name)
+            embed_result = embed_and_store(
+                all_chunks, collection_name,
+                commit_hash=commit_sha,
+                collection_name=collection_name,
+            )
 
             if embed_result["status"] == "error":
                 raise HTTPException(
@@ -403,17 +457,17 @@ async def ingest_repo(request: IngestRequest):
 
             # ── Step 5: Graph + Architecture + Metadata ────────────────
             _run_graph_and_architecture(
-                file_list, all_chunks, repo_name, graph_cache,
+                file_list, all_chunks, collection_name, graph_cache,
                 commit_sha, current_hashes,
             )
 
             return IngestResponse(
                 status="success",
-                repo_name=repo_name,
+                repo_name=collection_name,
                 files_indexed=len(file_list),
                 chunks_stored=embed_result["chunks_stored"],
                 graph_ready=True,
-                message=f"'{repo_name}' indexed successfully. Ready for analysis.",
+                message=f"'{collection_name}' indexed successfully. Ready for analysis.",
                 incremental=False,
                 commit_sha=commit_sha,
             )

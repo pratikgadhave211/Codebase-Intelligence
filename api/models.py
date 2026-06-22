@@ -19,7 +19,7 @@ Naming convention:
   *Response → what the backend sends OUT (response body)
 """
 
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, Field, model_validator
 from typing import Optional
 
 
@@ -34,6 +34,28 @@ class IngestRequest(BaseModel):
         description="Public GitHub repository URL to analyse.",
         example="https://github.com/tiangolo/fastapi",
     )
+    branch: Optional[str] = Field(
+        None,
+        description="Branch name to index. Defaults to repo default branch (main/master).",
+        example="develop",
+        min_length=1,
+        max_length=256,
+    )
+    commit_hash: Optional[str] = Field(
+        None,
+        description="Full 40-character SHA hex of the exact commit to index.",
+        example="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        pattern=r"^[0-9a-f]{40}$",
+    )
+
+    @model_validator(mode="after")
+    def branch_and_commit_mutually_exclusive(self) -> "IngestRequest":
+        if self.branch and self.commit_hash:
+            raise ValueError(
+                "Cannot specify both 'branch' and 'commit_hash'. "
+                "A commit hash is globally unique — specifying a branch is redundant."
+            )
+        return self
 
 
 class IngestResponse(BaseModel):
@@ -65,6 +87,11 @@ class AskRequest(BaseModel):
         ...,
         description="Natural language question about the codebase.",
         example="Where is the authentication logic handled?",
+    )
+    commit_hash: Optional[str] = Field(
+        None,
+        description="Filter results to chunks from a specific indexed commit.",
+        pattern=r"^[0-9a-f]{40}$",
     )
 
 

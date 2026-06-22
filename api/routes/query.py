@@ -33,6 +33,9 @@ async def ask_question(request: AskRequest):
 
     The answer includes exact file paths and line numbers from the
     retrieved chunks — so every claim is verifiable.
+
+    If commit_hash is provided, only chunks from that specific version
+    are returned — enabling version-specific Q&A.
     """
 
     # Retrieve top-5 most relevant chunks for this question
@@ -40,14 +43,16 @@ async def ask_question(request: AskRequest):
         query=request.question,
         repo_name=request.repo_name,
         top_k=5,
+        commit_hash=request.commit_hash,
     )
 
     if not chunks:
         raise HTTPException(
             status_code=404,
             detail=(
-                f"No indexed data found for repo '{request.repo_name}'. "
-                f"Run POST /api/v1/ingest first."
+                f"No indexed data found for repo '{request.repo_name}'"
+                + (f" at commit {request.commit_hash[:12]}..." if request.commit_hash else "")
+                + ". Run POST /api/v1/ingest first."
             ),
         )
 

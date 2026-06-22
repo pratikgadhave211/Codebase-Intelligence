@@ -73,7 +73,13 @@ def _cleanup_fastembed_cache():
             pass
 
 
-def _chunk_id(repo_name: str, file_path: str, chunk_name: str, start_line: int) -> str:
+def _chunk_id(
+    repo_name: str,
+    file_path: str,
+    chunk_name: str,
+    start_line: int,
+    commit_hash: str | None = None,
+) -> str:
     """
     Deterministic ID for a chunk — same input always produces the same ID.
 
@@ -81,20 +87,31 @@ def _chunk_id(repo_name: str, file_path: str, chunk_name: str, start_line: int) 
     unchanged chunks get the same ID and are simply overwritten (no-op),
     while new/changed chunks get new IDs and are inserted.
 
+    When commit_hash is provided, the same chunk at different commits
+    gets different IDs — ensuring version isolation.
+
     Uses MD5 hex digest (32 chars) — Qdrant accepts string IDs.
     """
-    raw = f"{repo_name}:{file_path}:{chunk_name}:{start_line}"
+    raw = f"{repo_name}:{file_path}:{chunk_name}:{start_line}:{commit_hash or 'HEAD'}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def _build_ids_and_payloads(chunks: list[dict], repo_name: str):
+def _build_ids_and_payloads(
+    chunks: list[dict],
+    repo_name: str,
+    commit_hash: str | None = None,
+) -> tuple[list[str], list[str], list[dict]]:
     """
     Build deterministic IDs and payloads for a list of chunks.
     Shared by both full-index and incremental paths.
+
+    When commit_hash is provided, it is:
+      1. Included in the chunk ID hash (version isolation)
+      2. Stored in every payload (queryable via filter)
     """
-    ids = []
-    payloads = []
-    texts = []
+    ids: list[str] = []
+    payloads: list[dict] = []
+    texts: list[str] = []
 
     for chunk in chunks:
         chunk_id = _chunk_id(
@@ -102,38 +119,44 @@ def _build_ids_and_payloads(chunks: list[dict], repo_name: str):
             chunk["file_path"],
             chunk["name"],
             chunk["start_line"],
+            commit_hash,
         )
         ids.append(chunk_id)
         texts.append(chunk["text"])
-        payloads.append({
-            "text":       chunk["text"],
-            "file_path":  chunk["file_path"],
-            "chunk_type": chunk["chunk_type"],
-            "name":       chunk["name"],
-            "start_line": chunk["start_line"],
-            "end_line":   chunk["end_line"],
-            "language":   chunk["language"],
-            "repo_name":  repo_name,
-        })
+        payload = {
+            "text":        chunk["text"],
+            "file_path":   chunk["file_path"],
+            "chunk_type":  chunk["chunk_type"],
+            "name":        chunk["name"],
+            "start_line":  chunk["start_line"],
+            "end_line":    chunk["end_line"],
+            "language":    chunk["language"],
+            "repo_name":   repo_name,
+        }
+        if commit_hash:
+            payload["commit_hash"] = commit_hash
+        payloads.append(payload)
 
     return ids, texts, payloads
 
 
 def _ensure_payload_index(collection_name: str) -> None:
     """
-    Create a keyword index on file_path so filter-based deletes are fast.
-    Without this, Qdrant does a full scan on every delete-by-filter call.
+    Create keyword indexes on file_path and commit_hash.
+    - file_path index: enables fast filter-based deletes by file
+    - commit_hash index: enables fast query filtering by version
     Idempotent — safe to call multiple times.
     """
-    try:
-        _qdrant.create_payload_index(
-            collection_name=collection_name,
-            field_name="file_path",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-    except Exception:
-        # Index might already exist — that's fine
-        pass
+    for field in ("file_path", "commit_hash"):
+        try:
+            _qdrant.create_payload_index(
+                collection_name=collection_name,
+                field_name=field,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            # Index might already exist — that's fine
+            pass
 
 
 def _delete_if_exists(collection_name: str) -> None:
@@ -153,13 +176,22 @@ def _delete_if_exists(collection_name: str) -> None:
         print(f"[embedder.py] Warning: could not check/delete collection: {e}")
 
 
-def embed_and_store(chunks: list[dict], repo_name: str) -> dict:
+def embed_and_store(
+    chunks: list[dict],
+    repo_name: str,
+    commit_hash: str | None = None,
+    collection_name: str | None = None,
+) -> dict:
     """
     Full index path — embed ALL chunks and store in a fresh Qdrant collection.
 
     Used for first-time ingestion of a repo. Deletes any existing collection
     and rebuilds from scratch with deterministic IDs.
+
+    collection_name defaults to repo_name for backwards compatibility.
+    When indexing a branch/commit, the caller passes a versioned name.
     """
+    coll = collection_name or repo_name
 
     if not chunks:
         return {
@@ -179,26 +211,26 @@ def embed_and_store(chunks: list[dict], repo_name: str) -> dict:
         }
 
     # Delete stale collection — let _qdrant.add() recreate with correct params
-    _delete_if_exists(repo_name)
+    _delete_if_exists(coll)
 
-    ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name)
+    ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
         print(f"[embedder.py] Embedding {len(chunks)} chunks (first run downloads ~130MB model)...")
 
         _cleanup_fastembed_cache()
         _qdrant.add(
-            collection_name=repo_name,
+            collection_name=coll,
             documents=texts,
             metadata=payloads,
             ids=ids,
             batch_size=100,
         )
 
-        # Create payload index for efficient filter-based deletes later
-        _ensure_payload_index(repo_name)
+        # Create payload indexes for efficient filtering and deletes
+        _ensure_payload_index(coll)
 
-        print(f"[embedder.py] Stored {len(chunks)} chunks in '{repo_name}'")
+        print(f"[embedder.py] Stored {len(chunks)} chunks in '{coll}'")
         return {
             "status":        "success",
             "repo_name":     repo_name,
@@ -219,7 +251,12 @@ def embed_and_store(chunks: list[dict], repo_name: str) -> dict:
         }
 
 
-def upsert_chunks(chunks: list[dict], repo_name: str) -> dict:
+def upsert_chunks(
+    chunks: list[dict],
+    repo_name: str,
+    commit_hash: str | None = None,
+    collection_name: str | None = None,
+) -> dict:
     """
     Incremental path — embed and upsert only the given chunks.
 
@@ -227,6 +264,8 @@ def upsert_chunks(chunks: list[dict], repo_name: str) -> dict:
     files are chunked and passed here. Qdrant treats matching IDs as
     overwrites (upserts).
     """
+    coll = collection_name or repo_name
+
     if not chunks:
         return {
             "status": "success",
@@ -234,21 +273,21 @@ def upsert_chunks(chunks: list[dict], repo_name: str) -> dict:
             "chunks_stored": 0,
         }
 
-    ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name)
+    ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
-        print(f"[embedder.py] Upserting {len(chunks)} chunks into '{repo_name}'...")
+        print(f"[embedder.py] Upserting {len(chunks)} chunks into '{coll}'...")
 
         _cleanup_fastembed_cache()
         _qdrant.add(
-            collection_name=repo_name,
+            collection_name=coll,
             documents=texts,
             metadata=payloads,
             ids=ids,
             batch_size=100,
         )
 
-        print(f"[embedder.py] Upserted {len(chunks)} chunks in '{repo_name}'")
+        print(f"[embedder.py] Upserted {len(chunks)} chunks in '{coll}'")
         return {
             "status":        "success",
             "repo_name":     repo_name,
