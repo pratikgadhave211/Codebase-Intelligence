@@ -68,7 +68,8 @@ def retrieve_chunks(
             collection_name=coll,
             query_vector=dense_vec,
             query_filter=query_filter,
-            limit=top_k, 
+            limit=top_k,
+            with_payload=True,
         )
 
         def normalize(results):
