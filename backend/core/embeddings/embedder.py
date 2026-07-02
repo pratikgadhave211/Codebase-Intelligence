@@ -10,12 +10,12 @@ import hashlib
 import os
 import shutil
 
-import httpx
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.http.models import PayloadSchemaType, VectorParams, Distance, PointStruct
+from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 
-from config import QDRANT_URL, QDRANT_API_KEY, HF_TOKEN
+from config import QDRANT_URL, QDRANT_API_KEY, NVIDIA_API_KEY
 
 _qdrant = QdrantClient(
     url=QDRANT_URL,
@@ -23,21 +23,12 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-class LightHFEmbedder:
-    """Ultra-lightweight HuggingFace client to prevent RAM crashes."""
-    def __init__(self, model_name="BAAI/bge-small-en-v1.5"):
-        self.url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
-        self.headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        
-    def embed_documents(self, texts):
-        # Truncate to ~1800 chars to avoid 400 Token Limit errors
-        truncated = [t[:1800] for t in texts]
-        res = httpx.post(self.url, headers=self.headers, json={"inputs": truncated, "options": {"wait_for_model": True}}, timeout=120)
-        if res.status_code != 200:
-            raise Exception(f"HF API Error: {res.text}")
-        return res.json()
-
-_hf_embedder = LightHFEmbedder()
+# Initialize NVIDIA Cloud Embeddings with built-in truncation to prevent 400 errors
+_nvidia_embedder = NVIDIAEmbeddings(
+    model="nvidia/nv-embedqa-e5-v5",
+    nvidia_api_key=NVIDIA_API_KEY,
+    truncate="END"
+)
 
 
 def _chunk_id(
@@ -126,8 +117,11 @@ def _batch_upsert(coll: str, ids: list[str], texts: list[str], payloads: list[di
         batch_texts = texts[i : i + batch_size]
         batch_payloads = payloads[i : i + batch_size]
 
-        # Call HF Cloud API to embed
-        embeddings = _hf_embedder.embed_documents(batch_texts)
+        # Truncate strings to ~4000 chars to avoid massive HTTP payloads
+        safe_texts = [t[:4000] for t in batch_texts]
+        
+        # Call NVIDIA Cloud API to embed
+        embeddings = _nvidia_embedder.embed_documents(safe_texts)
 
         # Build Qdrant PointStructs
         points = [
@@ -162,12 +156,12 @@ def embed_and_store(
             "chunks_stored": 0,
         }
 
-    # Recreate collection with HF dimension size (384)
+    # Recreate collection with NVIDIA dimension size (1024)
     _delete_if_exists(coll)
     try:
         _qdrant.create_collection(
             collection_name=coll,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
         )
     except Exception as e:
         print(f"[embedder.py] Warning creating collection: {e}")
@@ -175,7 +169,7 @@ def embed_and_store(
     ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
-        print(f"[embedder.py] Requesting embeddings from HuggingFace API for {len(chunks)} chunks...")
+        print(f"[embedder.py] Requesting embeddings from NVIDIA API for {len(chunks)} chunks...")
         
         chunks_stored = _batch_upsert(coll, ids, texts, payloads)
         _ensure_payload_index(coll)
@@ -213,7 +207,7 @@ def upsert_chunks(
     ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
-        print(f"[embedder.py] Requesting HuggingFace embeddings for incremental upsert of {len(chunks)} chunks...")
+        print(f"[embedder.py] Requesting NVIDIA embeddings for incremental upsert of {len(chunks)} chunks...")
         chunks_stored = _batch_upsert(coll, ids, texts, payloads)
 
         print(f"[embedder.py] Upserted {chunks_stored} chunks in '{coll}'")
