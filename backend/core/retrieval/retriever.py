@@ -21,6 +21,7 @@ _qdrant = QdrantClient(
 _nvidia_embedder = NVIDIAEmbeddings(
     model="nvidia/nv-embedqa-e5-v5",
     nvidia_api_key=NVIDIA_API_KEY,
+    truncate="END"
 )
 
 DEFAULT_TOP_K = 5
