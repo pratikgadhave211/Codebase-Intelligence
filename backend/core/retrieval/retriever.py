@@ -19,7 +19,7 @@ _qdrant = QdrantClient(
 
 # Initialize NVIDIA Cloud Embeddings
 _nvidia_embedder = NVIDIAEmbeddings(
-    model="NV-Embed-QA",
+    model="nvidia/nv-embedqa-e5-v5",
     nvidia_api_key=NVIDIA_API_KEY,
 )
 
