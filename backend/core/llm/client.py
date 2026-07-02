@@ -18,14 +18,16 @@ _qwen_client = ChatNVIDIA(
     model="qwen/qwen3.5-122b-a10b",
     temperature=0.7,
     nvidia_api_key=NVIDIA_API_KEY,
-    max_tokens=2048
+    max_tokens=2048,
+    timeout=120
 )
 
 _deepseek_client = ChatNVIDIA(
-    model="deepseek-ai/deepseek-v4-pro",
+    model="meta/llama-3.3-70b-instruct",
     temperature=1,
     nvidia_api_key=NVIDIA_API_KEY,
-    max_tokens=2048
+    max_tokens=2048,
+    timeout=120
 )
 
 def call_llm(prompt: str, temperature: float = 0.3, task_type: str = "general") -> str:
