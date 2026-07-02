@@ -19,6 +19,7 @@ load_dotenv()
 # Get it free at: aistudio.google.com → Get API Key
 # -----------------------------------------------------------------------
 NVIDIA_API_KEY: str = os.getenv("NVIDIA_API_KEY", "")
+HF_TOKEN: str = os.getenv("HF_TOKEN", "")
 
 # -----------------------------------------------------------------------
 # GITHUB_TOKEN (optional)

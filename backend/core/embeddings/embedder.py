@@ -13,9 +13,9 @@ import shutil
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.http.models import PayloadSchemaType, VectorParams, Distance, PointStruct
-from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain_huggingface import HuggingFaceInferenceAPIEmbeddings
 
-from config import QDRANT_URL, QDRANT_API_KEY, NVIDIA_API_KEY
+from config import QDRANT_URL, QDRANT_API_KEY, HF_TOKEN
 
 _qdrant = QdrantClient(
     url=QDRANT_URL,
@@ -23,11 +23,10 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-# Initialize NVIDIA Cloud Embeddings
-_nvidia_embedder = NVIDIAEmbeddings(
-    model="nvidia/nv-embedqa-e5-v5",
-    nvidia_api_key=NVIDIA_API_KEY,
-    truncate="END"
+# Initialize HuggingFace Cloud Embeddings
+_hf_embedder = HuggingFaceInferenceAPIEmbeddings(
+    api_key=HF_TOKEN,
+    model_name="BAAI/bge-small-en-v1.5",
 )
 
 
@@ -117,8 +116,8 @@ def _batch_upsert(coll: str, ids: list[str], texts: list[str], payloads: list[di
         batch_texts = texts[i : i + batch_size]
         batch_payloads = payloads[i : i + batch_size]
 
-        # Call NVIDIA Cloud API to embed
-        embeddings = _nvidia_embedder.embed_documents(batch_texts)
+        # Call HF Cloud API to embed
+        embeddings = _hf_embedder.embed_documents(batch_texts)
 
         # Build Qdrant PointStructs
         points = [
@@ -153,12 +152,12 @@ def embed_and_store(
             "chunks_stored": 0,
         }
 
-    # Recreate collection with NVIDIA dimension size (1024)
+    # Recreate collection with HF dimension size (384)
     _delete_if_exists(coll)
     try:
         _qdrant.create_collection(
             collection_name=coll,
-            vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
         )
     except Exception as e:
         print(f"[embedder.py] Warning creating collection: {e}")
@@ -166,7 +165,7 @@ def embed_and_store(
     ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
-        print(f"[embedder.py] Requesting embeddings from NVIDIA API for {len(chunks)} chunks...")
+        print(f"[embedder.py] Requesting embeddings from HuggingFace API for {len(chunks)} chunks...")
         
         chunks_stored = _batch_upsert(coll, ids, texts, payloads)
         _ensure_payload_index(coll)
@@ -204,7 +203,7 @@ def upsert_chunks(
     ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
-        print(f"[embedder.py] Requesting NVIDIA embeddings for incremental upsert of {len(chunks)} chunks...")
+        print(f"[embedder.py] Requesting HuggingFace embeddings for incremental upsert of {len(chunks)} chunks...")
         chunks_stored = _batch_upsert(coll, ids, texts, payloads)
 
         print(f"[embedder.py] Upserted {chunks_stored} chunks in '{coll}'")
