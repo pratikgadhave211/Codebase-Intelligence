@@ -1,9 +1,9 @@
 """
 Code Embedder
 
-Embeds code chunks and stores them in Qdrant. Supports full ingestion and 
-incremental indexing using deterministic point IDs (MD5 hashes) for targeted
-upserts and deletions.
+Embeds code chunks using NVIDIA Cloud Embeddings and stores them in Qdrant. 
+Supports full ingestion and incremental indexing using deterministic point IDs 
+(MD5 hashes) for targeted upserts and deletions.
 """
 
 import hashlib
@@ -12,11 +12,10 @@ import shutil
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
-from qdrant_client.http.models import PayloadSchemaType
+from qdrant_client.http.models import PayloadSchemaType, VectorParams, Distance, PointStruct
+from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 
-from config import QDRANT_URL, QDRANT_API_KEY
-
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+from config import QDRANT_URL, QDRANT_API_KEY, NVIDIA_API_KEY
 
 _qdrant = QdrantClient(
     url=QDRANT_URL,
@@ -24,41 +23,11 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-
-def _cleanup_fastembed_cache():
-    """
-    Workaround for fastembed 0.2.6 bug on Windows.
-
-    FastEmbed downloads the model to a temp dir (`tmp/fast-bge-small-en`)
-    then does os.rename() to the final path (`fast-bge-small-en`).
-    On Windows, os.rename() raises [WinError 183] if the TARGET already
-    exists (from a previous run). We must remove BOTH:
-      - The stale destination dir (so rename succeeds)
-      - The stale tmp dir (so download doesn't conflict)
-    """
-    import tempfile
-    cache_dir = os.environ.get(
-        "FASTEMBED_CACHE_PATH",
-        os.path.join(tempfile.gettempdir(), "fastembed_cache"),
-    )
-
-    # Delete stale destination model dir (the rename TARGET)
-    model_dir = os.path.join(cache_dir, "fast-bge-small-en")
-    if os.path.exists(model_dir):
-        try:
-            shutil.rmtree(model_dir)
-            print(f"[embedder.py] Cleaned stale fastembed model dir: {model_dir}")
-        except Exception:
-            pass
-
-    # Delete stale tmp dir (the rename SOURCE)
-    tmp_dir = os.path.join(cache_dir, "tmp")
-    if os.path.exists(tmp_dir):
-        try:
-            shutil.rmtree(tmp_dir)
-            print(f"[embedder.py] Cleaned stale fastembed temp dir: {tmp_dir}")
-        except Exception:
-            pass
+# Initialize NVIDIA Cloud Embeddings
+_nvidia_embedder = NVIDIAEmbeddings(
+    model="NV-Embed-QA",
+    nvidia_api_key=NVIDIA_API_KEY,
+)
 
 
 def _chunk_id(
@@ -70,14 +39,6 @@ def _chunk_id(
 ) -> str:
     """
     Deterministic ID for a chunk — same input always produces the same ID.
-
-    This is critical for incremental indexing: when a file is re-chunked,
-    unchanged chunks get the same ID and are simply overwritten (no-op),
-    while new/changed chunks get new IDs and are inserted.
-
-    When commit_hash is provided, the same chunk at different commits
-    gets different IDs — ensuring version isolation.
-
     Uses MD5 hex digest (32 chars) — Qdrant accepts string IDs.
     """
     raw = f"{repo_name}:{file_path}:{chunk_name}:{start_line}:{commit_hash or 'HEAD'}"
@@ -89,14 +50,7 @@ def _build_ids_and_payloads(
     repo_name: str,
     commit_hash: str | None = None,
 ) -> tuple[list[str], list[str], list[dict]]:
-    """
-    Build deterministic IDs and payloads for a list of chunks.
-    Shared by both full-index and incremental paths.
-
-    When commit_hash is provided, it is:
-      1. Included in the chunk ID hash (version isolation)
-      2. Stored in every payload (queryable via filter)
-    """
+    """Build deterministic IDs and payloads for a list of chunks."""
     ids: list[str] = []
     payloads: list[dict] = []
     texts: list[str] = []
@@ -129,12 +83,7 @@ def _build_ids_and_payloads(
 
 
 def _ensure_payload_index(collection_name: str) -> None:
-    """
-    Create keyword indexes on file_path and commit_hash.
-    - file_path index: enables fast filter-based deletes by file
-    - commit_hash index: enables fast query filtering by version
-    Idempotent — safe to call multiple times.
-    """
+    """Create keyword indexes on file_path and commit_hash."""
     for field in ("file_path", "commit_hash"):
         try:
             _qdrant.create_payload_index(
@@ -143,18 +92,11 @@ def _ensure_payload_index(collection_name: str) -> None:
                 field_schema=PayloadSchemaType.KEYWORD,
             )
         except Exception:
-            # Index might already exist — that's fine
             pass
 
 
 def _delete_if_exists(collection_name: str) -> None:
-    """
-    Delete a collection if it exists — clean slate for full re-indexing.
-    If it doesn't exist, do nothing.
-
-    We DON'T recreate it here — _qdrant.add() creates it automatically
-    with the correct vector params for the FastEmbed model.
-    """
+    """Delete a collection if it exists."""
     try:
         existing = [c.name for c in _qdrant.get_collections().collections]
         if collection_name in existing:
@@ -164,21 +106,43 @@ def _delete_if_exists(collection_name: str) -> None:
         print(f"[embedder.py] Warning: could not check/delete collection: {e}")
 
 
+def _batch_upsert(coll: str, ids: list[str], texts: list[str], payloads: list[dict]):
+    """Helper to embed and upsert in batches to avoid API limits."""
+    batch_size = 50
+    chunks_stored = 0
+
+    for i in range(0, len(texts), batch_size):
+        batch_ids = ids[i : i + batch_size]
+        batch_texts = texts[i : i + batch_size]
+        batch_payloads = payloads[i : i + batch_size]
+
+        # Call NVIDIA Cloud API to embed
+        embeddings = _nvidia_embedder.embed_documents(batch_texts)
+
+        # Build Qdrant PointStructs
+        points = [
+            PointStruct(id=point_id, vector=vector, payload=payload)
+            for point_id, vector, payload in zip(batch_ids, embeddings, batch_payloads)
+        ]
+
+        # Push to Qdrant
+        _qdrant.upsert(
+            collection_name=coll,
+            points=points
+        )
+        chunks_stored += len(points)
+        print(f"[embedder.py] Upserted batch of {len(points)} chunks... ({chunks_stored}/{len(texts)})")
+
+    return chunks_stored
+
+
 def embed_and_store(
     chunks: list[dict],
     repo_name: str,
     commit_hash: str | None = None,
     collection_name: str | None = None,
 ) -> dict:
-    """
-    Full index path — embed ALL chunks and store in a fresh Qdrant collection.
-
-    Used for first-time ingestion of a repo. Deletes any existing collection
-    and rebuilds from scratch with deterministic IDs.
-
-    collection_name defaults to repo_name for backwards compatibility.
-    When indexing a branch/commit, the caller passes a versioned name.
-    """
+    """Full index path — embed ALL chunks and store in a fresh Qdrant collection."""
     coll = collection_name or repo_name
 
     if not chunks:
@@ -187,50 +151,30 @@ def embed_and_store(
             "message": "No chunks provided — nothing to embed.",
             "chunks_stored": 0,
         }
-    
-    if len(chunks) > 1000:
-        return {
-            "status": "error",
-            "message": (
-                f"Repository too large. "
-                f"{len(chunks)} chunks exceeds limit."
-            ),
-            "chunks_stored": 0,
-        }
 
-    # Delete stale collection — let _qdrant.add() recreate with correct params
+    # Recreate collection with NVIDIA dimension size (1024)
     _delete_if_exists(coll)
+    try:
+        _qdrant.create_collection(
+            collection_name=coll,
+            vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+        )
+    except Exception as e:
+        print(f"[embedder.py] Warning creating collection: {e}")
 
     ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
-        print(f"[embedder.py] Embedding {len(chunks)} chunks (first run downloads ~130MB model)...")
-
-        _cleanup_fastembed_cache()
-        _qdrant.add(
-            collection_name=coll,
-            documents=texts,
-            metadata=payloads,
-            ids=ids,
-            batch_size=10,
-            parallel=1,
-        )
-
-        # Create payload indexes for efficient filtering and deletes
+        print(f"[embedder.py] Requesting embeddings from NVIDIA API for {len(chunks)} chunks...")
+        
+        chunks_stored = _batch_upsert(coll, ids, texts, payloads)
         _ensure_payload_index(coll)
 
-        print(f"[embedder.py] Stored {len(chunks)} chunks in '{coll}'")
+        print(f"[embedder.py] Stored {chunks_stored} chunks in '{coll}'")
         return {
             "status":        "success",
             "repo_name":     repo_name,
-            "chunks_stored": len(chunks),
-        }
-
-    except UnexpectedResponse as e:
-        return {
-            "status":  "error",
-            "message": f"Qdrant rejected the upload: {str(e)}",
-            "chunks_stored": 0,
+            "chunks_stored": chunks_stored,
         }
     except Exception as e:
         return {
@@ -246,13 +190,7 @@ def upsert_chunks(
     commit_hash: str | None = None,
     collection_name: str | None = None,
 ) -> dict:
-    """
-    Incremental path — embed and upsert only the given chunks.
-
-    Used when re-indexing a repo that has changed. Only the added/modified
-    files are chunked and passed here. Qdrant treats matching IDs as
-    overwrites (upserts).
-    """
+    """Incremental path — embed and upsert only the given chunks."""
     coll = collection_name or repo_name
 
     if not chunks:
@@ -265,30 +203,14 @@ def upsert_chunks(
     ids, texts, payloads = _build_ids_and_payloads(chunks, repo_name, commit_hash)
 
     try:
-        print(f"[embedder.py] Upserting {len(chunks)} chunks into '{coll}'...")
+        print(f"[embedder.py] Requesting NVIDIA embeddings for incremental upsert of {len(chunks)} chunks...")
+        chunks_stored = _batch_upsert(coll, ids, texts, payloads)
 
-        _cleanup_fastembed_cache()
-        _qdrant.add(
-            collection_name=coll,
-            documents=texts,
-            metadata=payloads,
-            ids=ids,
-            batch_size=10,
-            parallel=1,
-        )
-
-        print(f"[embedder.py] Upserted {len(chunks)} chunks in '{coll}'")
+        print(f"[embedder.py] Upserted {chunks_stored} chunks in '{coll}'")
         return {
             "status":        "success",
             "repo_name":     repo_name,
-            "chunks_stored": len(chunks),
-        }
-
-    except UnexpectedResponse as e:
-        return {
-            "status":  "error",
-            "message": f"Qdrant rejected the upsert: {str(e)}",
-            "chunks_stored": 0,
+            "chunks_stored": chunks_stored,
         }
     except Exception as e:
         return {
@@ -299,27 +221,11 @@ def upsert_chunks(
 
 
 def delete_file_chunks(repo_name: str, file_paths: list[str]) -> int:
-    """
-    Delete all Qdrant points belonging to the given file paths.
-
-    Used during incremental indexing to remove chunks from:
-      - Deleted files (file no longer exists in the repo)
-      - Modified files (old chunks removed before upserting new ones,
-        since a modified file may produce different chunks)
-
-    Uses a payload filter on file_path, which is indexed as a keyword
-    for fast lookups (see _ensure_payload_index).
-    """
+    """Delete all Qdrant points belonging to the given file paths."""
     if not file_paths:
         return 0
-
     try:
-        from qdrant_client.models import (
-            Filter,
-            FieldCondition,
-            MatchAny,
-        )
-
+        from qdrant_client.models import Filter, FieldCondition, MatchAny
         _qdrant.delete(
             collection_name=repo_name,
             points_selector=Filter(
@@ -331,13 +237,8 @@ def delete_file_chunks(repo_name: str, file_paths: list[str]) -> int:
                 ]
             ),
         )
-
-        print(
-            f"[embedder.py] Deleted chunks for {len(file_paths)} files "
-            f"from '{repo_name}'"
-        )
+        print(f"[embedder.py] Deleted chunks for {len(file_paths)} files from '{repo_name}'")
         return len(file_paths)
-
     except Exception as e:
         print(f"[embedder.py] Failed to delete file chunks: {e}")
         return 0

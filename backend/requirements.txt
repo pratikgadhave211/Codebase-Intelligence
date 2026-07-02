@@ -9,9 +9,7 @@ tree-sitter-javascript==0.21.3
 tree-sitter-typescript==0.21.2
 
 # Vector DB + embeddings
-qdrant-client[fastembed]
-fastembed==0.8.0
-
+qdrant-client
 # LLM — NVIDIA via LangChain
 langchain-nvidia-ai-endpoints
 langchain-core

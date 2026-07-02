@@ -2,22 +2,14 @@
 Code Retriever
 
 Handles semantic search over indexed code chunks in Qdrant. Embeds queries
-using the same dense and sparse models used during ingestion, and retrieves
-the top-k most relevant chunks using hybrid search.
+using the NVIDIA Cloud Embeddings API and retrieves the top-k most relevant chunks.
 """
 
-from qdrant_client import QdrantClient, models
+from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
+from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 
-from config import QDRANT_URL, QDRANT_API_KEY
-from fastembed import TextEmbedding, SparseTextEmbedding
-
-# Use the same models as embedder.py
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
-
-# Initialize FastEmbed directly so we can generate vectors manually
-# without relying on QdrantClient's auto-magic which is limited in v1.9.1
-_dense_model = TextEmbedding(EMBEDDING_MODEL)
+from config import QDRANT_URL, QDRANT_API_KEY, NVIDIA_API_KEY
 
 _qdrant = QdrantClient(
     url=QDRANT_URL,
@@ -25,9 +17,12 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-# Default number of chunks to retrieve per query.
-# 5 chunks × ~750 tokens each = ~3750 tokens of context.
-# Well within Groq's 6000 TPM limit per request.
+# Initialize NVIDIA Cloud Embeddings
+_nvidia_embedder = NVIDIAEmbeddings(
+    model="NV-Embed-QA",
+    nvidia_api_key=NVIDIA_API_KEY,
+)
+
 DEFAULT_TOP_K = 5
 
 
@@ -38,46 +33,18 @@ def retrieve_chunks(
     commit_hash: str | None = None,
     collection_name: str | None = None,
 ) -> list[dict]:
-    """
-    Embed a query and return the top-k most relevant chunks from Qdrant.
-
-    Args:
-        query           : Natural language question or search term
-        repo_name       : Qdrant collection to search in (= repo name from cloner)
-        top_k           : Number of chunks to return
-        commit_hash     : If provided, filter results to only this commit's chunks
-        collection_name : Override collection name (for versioned collections)
-
-    Returns:
-        List of chunk dicts, each containing:
-        {
-            "text":       "def authenticate(user, pwd): ...",
-            "file_path":  "src/auth.py",
-            "chunk_type": "function",
-            "name":       "authenticate",
-            "start_line": 14,
-            "end_line":   38,
-            "language":   "python",
-            "score":      0.87,   ← cosine similarity (0.0 to 1.0)
-        }
-        Returns empty list on any error — never raises.
-    """
+    """Embed a query and return the top-k most relevant chunks from Qdrant."""
     coll = collection_name or repo_name
 
-    # First check the collection exists
     try:
         existing = [c.name for c in _qdrant.get_collections().collections]
         if coll not in existing:
-            print(
-                f"[retriever.py] Collection '{coll}' not found. "
-                f"Has this repo been ingested yet?"
-            )
+            print(f"[retriever.py] Collection '{coll}' not found.")
             return []
     except Exception as e:
         print(f"[retriever.py] Cannot connect to Qdrant: {e}")
         return []
 
-    # Build optional filter for commit_hash
     query_filter = None
     if commit_hash:
         from qdrant_client.models import Filter, FieldCondition, MatchValue
@@ -90,20 +57,18 @@ def retrieve_chunks(
             ]
         )
 
-    # Perform semantic search
     try:
-        # Embed query text
-        dense_vec = list(_dense_model.embed([query]))[0]
+        # Embed query text using NVIDIA API
+        dense_vec = _nvidia_embedder.embed_query(query)
 
-        # 1. Fetch dense results
+        # Fetch dense results
         dense_results = _qdrant.search(
             collection_name=coll,
-            query_vector=("fast-bge-small-en", dense_vec.tolist()),
+            query_vector=dense_vec,
             query_filter=query_filter,
             limit=top_k, 
         )
 
-        # 2. Min-Max Normalization helper
         def normalize(results):
             if not results:
                 return {}
@@ -115,30 +80,22 @@ def retrieve_chunks(
 
         norm_dense = normalize(dense_results)
 
-        # Map IDs back to full chunk payloads
-        # Using dicts for O(1) lookups
         chunk_map = {}
         for r in dense_results:
             if r.id not in chunk_map:
                 chunk_map[r.id] = dict(r.payload)
 
-        # 3. Score Assignment
         scored_chunks = []
         for chunk_id, payload in chunk_map.items():
             d_score = norm_dense.get(chunk_id, 0.0)
-            
             payload["score"] = round(d_score, 4)
             payload["dense_score"] = round(d_score, 4)
             scored_chunks.append(payload)
 
-        # Sort descending by final score
         scored_chunks.sort(key=lambda x: x["score"], reverse=True)
         final_chunks = scored_chunks[:top_k]
 
-        print(
-            f"[retriever.py] Hybrid Query: '{query[:50]}...' -> "
-            f"{len(final_chunks)} chunks retrieved from '{repo_name}'"
-        )
+        print(f"[retriever.py] Query: '{query[:50]}...' -> {len(final_chunks)} chunks retrieved from '{repo_name}'")
         return final_chunks
 
     except UnexpectedResponse as e:
@@ -146,8 +103,6 @@ def retrieve_chunks(
         return []
     except Exception as e:
         print(f"[retriever.py] Unexpected retrieval error: {e}")
-        import traceback
-        traceback.print_exc()
         return []
 
 
