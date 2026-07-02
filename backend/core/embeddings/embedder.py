@@ -212,7 +212,8 @@ def embed_and_store(
             documents=texts,
             metadata=payloads,
             ids=ids,
-            batch_size=100,
+            batch_size=10,
+            parallel=1,
         )
 
         # Create payload indexes for efficient filtering and deletes
@@ -272,7 +273,8 @@ def upsert_chunks(
             documents=texts,
             metadata=payloads,
             ids=ids,
-            batch_size=100,
+            batch_size=10,
+            parallel=1,
         )
 
         print(f"[embedder.py] Upserted {len(chunks)} chunks in '{coll}'")
