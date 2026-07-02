@@ -5,9 +5,9 @@ Handles semantic search over indexed code chunks in Qdrant. Embeds queries
 using the NVIDIA Cloud Embeddings API and retrieves the top-k most relevant chunks.
 """
 
+import httpx
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
-from langchain_huggingface import HuggingFaceInferenceAPIEmbeddings
 
 from config import QDRANT_URL, QDRANT_API_KEY, HF_TOKEN
 
@@ -17,11 +17,20 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-# Initialize HuggingFace Cloud Embeddings
-_hf_embedder = HuggingFaceInferenceAPIEmbeddings(
-    api_key=HF_TOKEN,
-    model_name="BAAI/bge-small-en-v1.5",
-)
+class LightHFEmbedder:
+    """Ultra-lightweight HuggingFace client to prevent RAM crashes."""
+    def __init__(self, model_name="BAAI/bge-small-en-v1.5"):
+        self.url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
+        self.headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        
+    def embed_query(self, text):
+        truncated = text[:1800]
+        res = httpx.post(self.url, headers=self.headers, json={"inputs": [truncated], "options": {"wait_for_model": True}}, timeout=120)
+        if res.status_code != 200:
+            raise Exception(f"HF API Error: {res.text}")
+        return res.json()[0]
+
+_hf_embedder = LightHFEmbedder()
 
 DEFAULT_TOP_K = 5
 

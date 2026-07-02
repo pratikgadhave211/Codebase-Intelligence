@@ -10,10 +10,10 @@ import hashlib
 import os
 import shutil
 
+import httpx
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.http.models import PayloadSchemaType, VectorParams, Distance, PointStruct
-from langchain_huggingface import HuggingFaceInferenceAPIEmbeddings
 
 from config import QDRANT_URL, QDRANT_API_KEY, HF_TOKEN
 
@@ -23,11 +23,21 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-# Initialize HuggingFace Cloud Embeddings
-_hf_embedder = HuggingFaceInferenceAPIEmbeddings(
-    api_key=HF_TOKEN,
-    model_name="BAAI/bge-small-en-v1.5",
-)
+class LightHFEmbedder:
+    """Ultra-lightweight HuggingFace client to prevent RAM crashes."""
+    def __init__(self, model_name="BAAI/bge-small-en-v1.5"):
+        self.url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
+        self.headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        
+    def embed_documents(self, texts):
+        # Truncate to ~1800 chars to avoid 400 Token Limit errors
+        truncated = [t[:1800] for t in texts]
+        res = httpx.post(self.url, headers=self.headers, json={"inputs": truncated, "options": {"wait_for_model": True}}, timeout=120)
+        if res.status_code != 200:
+            raise Exception(f"HF API Error: {res.text}")
+        return res.json()
+
+_hf_embedder = LightHFEmbedder()
 
 
 def _chunk_id(
