@@ -63,14 +63,14 @@ def retrieve_chunks(
         safe_query = query[:4000]
         dense_vec = _nvidia_embedder.embed_query(safe_query)
 
-        # Fetch dense results
-        dense_results = _qdrant.search(
+        # Fetch dense results using standard query_points
+        dense_results = _qdrant.query_points(
             collection_name=coll,
-            query_vector=dense_vec,
+            query=dense_vec,
             query_filter=query_filter,
             limit=top_k,
             with_payload=True,
-        )
+        ).points
 
         def normalize(results):
             if not results:
