@@ -1,0 +1,296 @@
+:root {
+  /* Typography */
+  --font-base: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  
+  /* Light Theme (Neobrutalism Default) */
+  --color-bg: #ffffff;
+  --color-bg-elevated: #faf9f6;
+  --color-text: #213547;
+  --color-text-strong: #000000;
+  --color-text-muted: #666666;
+  --color-accent: #f97316;
+  --color-accent-hover: #ea580c;
+  --color-border: #111827;
+  --color-border-subtle: #e0e0e0;
+  --color-shadow: #111827;
+  --color-header-bg: #ffffff;
+  --color-divider: #000000;
+  --color-input-bg: #ffffff;
+  --color-input-disabled: #f5f5f5;
+
+  /* Status Colors */
+  --success: #10b981;
+  --danger: #ef4444;
+}
+
+[data-theme="dark"] {
+  --color-bg: #0f172a;
+  --color-bg-elevated: #1e293b;
+  --color-text: #e2e8f0;
+  --color-text-strong: #f8fafc;
+  --color-text-muted: #94a3b8;
+  --color-accent: #f97316;
+  --color-accent-hover: #fb923c;
+  --color-border: #334155;
+  --color-border-subtle: #475569;
+  --color-shadow: #0f172a;
+  --color-header-bg: #0f172a;
+  --color-divider: #e2e8f0;
+  --color-input-bg: #1e293b;
+  --color-input-disabled: #334155;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  min-height: 100vh;
+  font-family: var(--font-base);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+#root {
+  display: flex;
+  width: 100%;
+}
+
+.app-container {
+  display: flex;
+  width: 100%;
+  height: 100vh;
+}
+
+/* --- NEOBRUTALISM SIDEBAR --- */
+.sidebar {
+  width: 260px;
+  background: var(--color-bg-elevated);
+  border-right: 3px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem 1rem;
+}
+
+.sidebar h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-text-strong);
+  margin-bottom: 2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  color: var(--color-text);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s, background-color 0.1s;
+  border: 2px solid transparent;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.nav-link:hover {
+  background: var(--color-bg);
+  border-color: var(--color-border);
+  transform: translate(-1px, -1px);
+  box-shadow: 2px 2px 0 var(--color-shadow);
+  color: var(--color-text-strong);
+}
+
+.nav-link.active {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-border);
+  box-shadow: 2px 2px 0 var(--color-shadow);
+}
+
+.nav-link.active:hover {
+  transform: translate(0, 0);
+  box-shadow: 1px 1px 0 var(--color-shadow);
+}
+
+/* --- MAIN CONTENT & CONTAINERS --- */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.topbar {
+  height: 60px;
+  border-bottom: 3px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  padding: 0 2rem;
+  background: var(--color-header-bg);
+  font-weight: 500;
+}
+
+.content-area {
+  flex: 1;
+  padding: 2rem;
+  overflow-y: auto;
+  position: relative;
+  background-color: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.glass-panel {
+  background: var(--color-bg-elevated);
+  border: 3px solid var(--color-border);
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 10px 10px 0 var(--color-shadow);
+  margin-bottom: 2rem;
+}
+
+/* --- FORMS, INPUTS & BUTTONS --- */
+input[type="text"], input[type="url"] {
+  background: var(--color-input-bg);
+  border: 2px solid var(--color-border);
+  color: var(--color-text-strong);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  outline: none;
+  width: 100%;
+  font-family: var(--font-base);
+  font-size: 15px;
+  box-shadow: inset 2px 2px 0 rgba(0,0,0,0.05); /* Subtle inner depth */
+  transition: box-shadow 0.2s, transform 0.1s;
+}
+
+input:focus {
+  box-shadow: 4px 4px 0 var(--color-shadow);
+  transform: translate(-1px, -1px);
+}
+
+input:disabled {
+  background: var(--color-input-disabled);
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+button {
+  background: var(--color-accent);
+  color: white;
+  border: 2px solid var(--color-border);
+  padding: 0.75rem 1.5rem;
+  border-radius: 8px;
+  font-weight: 600;
+  font-family: var(--font-base);
+  font-size: 15px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  box-shadow: 4px 4px 0 var(--color-shadow);
+  transform: translate(-1px, -1px);
+  transition: transform 0.1s, box-shadow 0.1s, background-color 0.2s;
+}
+
+button:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--color-shadow);
+}
+
+button:active:not(:disabled) {
+  transform: translate(0, 0);
+  box-shadow: 1px 1px 0 var(--color-shadow);
+}
+
+button:disabled {
+  background: var(--color-border-subtle);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  transform: translate(0, 0);
+  box-shadow: none;
+}
+
+/* --- SPINNER --- */
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* --- CHAT COMPONENT --- */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 1.5rem;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-right: 1rem;
+}
+
+.message {
+  max-width: 80%;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  line-height: 1.5;
+  border: 2px solid var(--color-border);
+  box-shadow: 3px 3px 0 var(--color-shadow);
+  font-weight: 500;
+  white-space: pre-wrap;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: var(--color-accent);
+  color: white;
+}
+
+.message.bot {
+  align-self: flex-start;
+  background: var(--color-bg);
+  color: var(--color-text-strong);
+}
+
+.chat-input {
+  display: flex;
+  gap: 1rem;
+}
+
+.chat-input button {
+  padding: 0.75rem 1rem;
+}
+
+/* --- BUG CARDS --- */
+.bug-card {
+  background: var(--color-bg);
+  border: 2px solid var(--color-border);
+  padding: 1.5rem;
+  border-radius: 12px;
+  margin-bottom: 1.5rem;
+  box-shadow: 4px 4px 0 var(--color-shadow);
+}
+
+.bug-card h3 {
+  color: var(--danger);
+  margin-top: 0;
+  font-weight: 700;
+  border-bottom: 2px solid var(--color-border);
+  padding-bottom: 0.5rem;
+}

@@ -1,0 +1,231 @@
+.\config.py:2: config.py — Single source of truth for all environment variables.
+.\config.py:20: # On Railway, .env doesn't exist — variables are injected by Railway
+.\config.py:30: # Get it free at: aistudio.google.com → Get API Key
+.\config.py:37: # Get one at: github.com → Settings → Developer settings → Personal access tokens
+.\config.py:46: # Found in: Qdrant Cloud dashboard → your cluster → Connection details
+.\config.py:53: # Found in: Qdrant Cloud dashboard → your cluster → API Keys
+.\config.py:75: # Safety limit — prevents enormous repos from taking 10 minutes to index.
+.\main.py:2: main.py — FastAPI application entry point.
+.\main.py:44: # ── Routers ────────────────────────────────────────────────────────────
+.\api\models.py:2: api/models.py — Pydantic request/response schemas for every endpoint.
+.\api\models.py:10: It also generates the JSON schema that powers the /docs Swagger UI —
+.\api\models.py:14: Same reason as prompts.py — one place to change shapes.
+.\api\models.py:18: *Request  → what the frontend sends IN  (request body)
+.\api\models.py:19: *Response → what the backend sends OUT (response body)
+.\api\models.py:27: # INGEST — POST /api/v1/ingest
+.\api\models.py:56: "A commit hash is globally unique — specifying a branch is redundant."
+.\api\models.py:76: # QUERY — POST /api/v1/ask
+.\api\models.py:107: # GRAPH — GET /api/v1/graph?repo_name=fastapi
+.\api\models.py:119: # BUGS — GET /api/v1/bugs?repo_name=fastapi
+.\api\models.py:139: # DIAGRAM — GET /api/v1/diagram?repo_name=fastapi
+.\api\models.py:151: # ERROR — used by all routes when something goes wrong.
+.\api\routes\bugs.py:2: api/routes/bugs.py — GET /api/v1/bugs?repo_name=fastapi
+.\api\routes\bugs.py:9: 2. Run FIND_BUGS prompt — asks for JSON array output
+.\api\routes\bugs.py:21: If parsing still fails, we return a graceful error — never crash.
+.\api\routes\bugs.py:43: Returns empty list if parsing fails — never raises.
+.\api\routes\bugs.py:81: # Retrieve broad sample — 30 chunks from across the codebase
+.\api\routes\bugs.py:94: # Use lower temperature for bug detection — want consistent, deterministic output
+.\api\routes\bugs.py:100: # Convert to BugItem models — skip any malformed entries
+.\api\routes\check.py:2: api/routes/check.py — Check if a repo is already indexed in Qdrant.
+.\api\routes\check.py:83: pass  # Can't determine — don't flag as needing update
+.\api\routes\diagram.py:2: api/routes/diagram.py — GET /api/v1/diagram?repo_name=fastapi
+.\api\routes\diagram.py:47: Frontend renders Mermaid string using mermaid.js — no image generation needed.
+.\api\routes\diagram.py:65: # Use broad sample for architecture — want overall picture, not specific detail
+.\api\routes\graph.py:2: api/routes/graph.py — GET /api/v1/graph?repo_name=fastapi
+.\api\routes\graph.py:7: This route just retrieves from the cache — no recomputation.
+.\api\routes\graph.py:18: # Import the cache from ingest.py — single source of truth
+.\api\routes\graph.py:36: The HTML is a self-contained Pyvis network — embed it in an iframe.
+.\api\routes\ingest.py:2: api/routes/ingest.py — POST /api/v1/ingest
+.\api\routes\ingest.py:8: resolve → check SHA → clone → walk → chunk → embed → graph → store
+.\api\routes\ingest.py:11: resolve → check SHA → clone → walk → diff → chunk changed files →
+.\api\routes\ingest.py:12: delete stale chunks → upsert new chunks → rebuild graph → update metadata
+.\api\routes\ingest.py:15: resolve → check SHA → return immediately (NO clone, NO download)
+.\api\routes\ingest.py:28: complete file tree — only the Qdrant embedding step is incremental.
+.\api\routes\ingest.py:44: """Windows read-only file handler for shutil.rmtree — see cloner.py for explanation."""
+.\api\routes\ingest.py:82: # Key:   collection_name (str) — may include branch/commit suffix
+.\api\routes\ingest.py:97: - repo_name="fastapi", branch=None, commit=None → "fastapi"
+.\api\routes\ingest.py:98: - repo_name="fastapi", branch="develop"          → "fastapi__develop"
+.\api\routes\ingest.py:99: - repo_name="fastapi", commit_hash="abc123..."   → "fastapi__abc123de"
+.\api\routes\ingest.py:129: incremental updates — because the full clone is still on disk at this point.
+.\api\routes\ingest.py:191: "If the repo was previously indexed, performs an incremental update — "
+.\api\routes\ingest.py:201: 1. First time   → full index (clone → walk → chunk → embed → graph)
+.\api\routes\ingest.py:202: 2. Same commit  → return "already up to date" (NO download)
+.\api\routes\ingest.py:203: 3. New commit   → incremental (diff → chunk changed → upsert/delete)
+.\api\routes\ingest.py:208: # ══════════════════════════════════════════════════════════════════
+.\api\routes\ingest.py:209: # PHASE 1: RESOLVE (cheap — no download)
+.\api\routes\ingest.py:212: # ══════════════════════════════════════════════════════════════════
+.\api\routes\ingest.py:226: # validate_commit_hash or fetch_branch_head raised — hard 400
+.\api\routes\ingest.py:253: # ══════════════════════════════════════════════════════════════════
+.\api\routes\ingest.py:254: # FAST PATH: Already up to date — NO download needed
+.\api\routes\ingest.py:256: # ══════════════════════════════════════════════════════════════════
+.\api\routes\ingest.py:276: # ══════════════════════════════════════════════════════════════════
+.\api\routes\ingest.py:277: # PHASE 2: CLONE (expensive — zip download)
+.\api\routes\ingest.py:279: # ══════════════════════════════════════════════════════════════════
+.\api\routes\ingest.py:296: # ── Step 2: Walk ───────────────────────────────────────────────
+.\api\routes\ingest.py:313: # ── Decide: full index or incremental ──────────────────────────
+.\api\routes\ingest.py:315: # ══════════════════════════════════════════════════════════
+.\api\routes\ingest.py:317: # ══════════════════════════════════════════════════════════
+.\api\routes\ingest.py:355: message=f"'{collection_name}' content unchanged — metadata updated.",
+.\api\routes\ingest.py:363: # ── Delete stale chunks ────────────────────────────────────
+.\api\routes\ingest.py:372: # ── Chunk and upsert ONLY changed files ────────────────────
+.\api\routes\ingest.py:392: # ── Rebuild graph + architecture ───────────────────────────
+.\api\routes\ingest.py:427: # ══════════════════════════════════════════════════════════
+.\api\routes\ingest.py:429: # ══════════════════════════════════════════════════════════
+.\api\routes\ingest.py:432: # ── Step 3: Chunk ──────────────────────────────────────────
+.\api\routes\ingest.py:438: detail="Chunking produced no output. This is unexpected — check logs.",
+.\api\routes\ingest.py:443: # ── Step 4: Embed + Store ──────────────────────────────────
+.\api\routes\ingest.py:458: # ── Step 5: Graph + Architecture + Metadata ────────────────
+.\api\routes\ingest.py:476: # ── Cleanup: remove cloned repo from disk ──────────────────────
+.\api\routes\ingest.py:477: # Always runs — even if an exception was raised above.
+.\api\routes\query.py:2: api/routes/query.py — POST /api/v1/ask
+.\api\routes\query.py:35: retrieved chunks — so every claim is verifiable.
+.\api\routes\query.py:38: are returned — enabling version-specific Q&A.
+.\core\embeddings\embedder.py:2: core/embeddings/embedder.py — Embeds code chunks and stores them in Qdrant.
+.\core\embeddings\embedder.py:5: 1. Full index  — first-time ingestion. Deletes stale collection, creates fresh.
+.\core\embeddings\embedder.py:6: 2. Incremental — re-ingestion after a commit. Upserts changed chunks, deletes
+.\core\embeddings\embedder.py:10: Old approach: sequential ints (0, 1, 2, ...) — different on every run.
+.\core\embeddings\embedder.py:16: _qdrant.add() is the FastEmbed-integrated method — it embeds text AND stores.
+.\core\embeddings\embedder.py:84: Deterministic ID for a chunk — same input always produces the same ID.
+.\core\embeddings\embedder.py:91: gets different IDs — ensuring version isolation.
+.\core\embeddings\embedder.py:93: Uses MD5 hex digest (32 chars) — Qdrant accepts string IDs.
+.\core\embeddings\embedder.py:148: Idempotent — safe to call multiple times.
+.\core\embeddings\embedder.py:158: # Index might already exist — that's fine
+.\core\embeddings\embedder.py:164: Delete a collection if it exists — clean slate for full re-indexing.
+.\core\embeddings\embedder.py:167: We DON'T recreate it here — _qdrant.add() creates it automatically
+.\core\embeddings\embedder.py:186: Full index path — embed ALL chunks and store in a fresh Qdrant collection.
+.\core\embeddings\embedder.py:199: "message": "No chunks provided — nothing to embed.",
+.\core\embeddings\embedder.py:213: # Delete stale collection — let _qdrant.add() recreate with correct params
+.\core\embeddings\embedder.py:261: Incremental path — embed and upsert only the given chunks.
+.\core\graph\builder.py:2: core/graph/builder.py — Builds a dependency graph from a repo's import statements.
+.\core\graph\builder.py:10: main.py        → imports → database.py
+.\core\graph\builder.py:11: database.py    → imports → config.py
+.\core\graph\builder.py:12: auth.py        → imports → database.py
+.\core\graph\builder.py:13: auth.py        → imports → config.py
+.\core\graph\builder.py:18: - Circular dependencies (A imports B imports A — a real code smell)
+.\core\graph\builder.py:28: Runtime tracing would require EXECUTING the code — unsafe, slow, impossible
+.\core\graph\builder.py:31: We document this limitation honestly — interviewers respect that.
+.\core\graph\builder.py:37: represent core shared modules — exactly the files a new developer should
+.\core\graph\builder.py:65: import os                    → node type: import_statement
+.\core\graph\builder.py:66: from pathlib import Path     → node type: import_from_statement
+.\core\graph\builder.py:84: # "import os, sys" → children include "dotted_name" nodes
+.\core\graph\builder.py:87: # Take the first identifier — "os" from "os.path"
+.\core\graph\builder.py:89: # Strip alias: "import numpy as np" → "numpy"
+.\core\graph\builder.py:95: # "from auth import User" → we want "auth"
+.\core\graph\builder.py:121: import { foo } from './auth'          → import_statement
+.\core\graph\builder.py:122: const x = require('./database')       → call_expression with "require"
+.\core\graph\builder.py:123: import type { MyType } from './types' → import_statement (TS)
+.\core\graph\builder.py:141: # Strip quotes: '"./auth"' → './auth'
+.\core\graph\builder.py:181: 3. If nothing found, it's a third-party/stdlib import — return None
+.\core\graph\builder.py:183: We return None for unresolved imports — they just don't get an edge.
+.\core\graph\builder.py:211: return None  # Third-party or stdlib — no edge
+.\core\graph\builder.py:216: # Multiple candidates — pick the one in the same directory first
+.\core\graph\builder.py:344: Public interface — builds and returns the full dependency graph.
+.\core\graph\builder.py:354: - weight: 1 (for future use — could count import frequency)
+.\core\graph\builder.py:357: renderer.py  → to produce the interactive HTML visualisation
+.\core\graph\builder.py:358: routes/graph.py → served to the frontend
+.\core\graph\builder.py:450: # Log graph stats — useful for debugging and for interviews
+.\core\graph\renderer.py:2: core/graph/renderer.py — Converts the NetworkX graph to interactive HTML.
+.\core\graph\renderer.py:16: Pyvis bundles vis.js into the output HTML — no external CDN needed.
+.\core\graph\renderer.py:23: Python     → blue  (#4B8BBE — Python's brand colour)
+.\core\graph\renderer.py:24: JavaScript → yellow (#F7DF1E — JS's brand colour)
+.\core\graph\renderer.py:25: TypeScript → blue-ish (#3178C6 — TS's brand colour)
+.\core\graph\renderer.py:26: Default    → grey
+.\core\graph\renderer.py:35: "A → B" means "A imports B".
+.\core\graph\renderer.py:102: # bgcolor: dark background — looks professional
+.\core\graph\renderer.py:117: #   - label: shortened filename (not full path — too long)
+.\core\graph\renderer.py:140: # Hover tooltip — shown when user mouses over a node
+.\core\graph\renderer.py:159: # Each edge is a directed arrow: importer → imported
+.\core\graph\renderer.py:175: # Physics configuration — controls how the graph lays itself out.
+.\core\ingestion\chunker.py:2: core/ingestion/chunker.py — Splits source files into semantic chunks via AST.
+.\core\ingestion\chunker.py:10: chunk 1: lines 1–50
+.\core\ingestion\chunker.py:11: chunk 2: lines 51–100
+.\core\ingestion\chunker.py:13: This is fast but dumb. A function that spans lines 40–80 gets split
+.\core\ingestion\chunker.py:18: chunk 1: function authenticate() — lines 1–45 (complete unit)
+.\core\ingestion\chunker.py:19: chunk 2: class UserManager — lines 47–120 (complete unit)
+.\core\ingestion\chunker.py:27: representing the code's meaning — not its text. For example:
+.\core\ingestion\chunker.py:29: def add(a, b):       →  FunctionDef
+.\core\ingestion\chunker.py:40: This guarantees each chunk is a complete semantic unit — the embedding
+.\core\ingestion\chunker.py:47: 1. tree-sitter grammar not installed — caught, falls back to line chunking
+.\core\ingestion\chunker.py:48: 2. Syntax errors in the source file — tree-sitter parses anyway (error nodes)
+.\core\ingestion\chunker.py:49: 3. Very deeply nested code — we only go 2 levels deep (top-level + class methods)
+.\core\ingestion\chunker.py:50: 4. Dynamic code (exec, eval, metaprogramming) — not representable in AST
+.\core\ingestion\chunker.py:51: 5. Files with no functions or classes — falls back to whole-file chunk
+.\core\ingestion\chunker.py:77: # Map language name → Language object
+.\core\ingestion\chunker.py:88: # These are tree-sitter node type names — they match the AST grammar
+.\core\ingestion\chunker.py:95: #   JS also has "arrow_function" and "method_definition" — we capture those too
+.\core\ingestion\chunker.py:120: # large switch statements). We cap at 3000 chars — roughly 750 tokens.
+.\core\ingestion\chunker.py:149: Python function_definition → child named "name" (identifier node)
+.\core\ingestion\chunker.py:150: JS function_declaration    → child named "name" (identifier node)
+.\core\ingestion\chunker.py:151: JS method_definition       → child named "name" (property_identifier)
+.\core\ingestion\chunker.py:238: # Too small — stub or empty function, not worth indexing
+.\core\ingestion\chunker.py:243: # Too large — truncate to MAX_CHUNK_CHARS
+.\core\ingestion\chunker.py:275: # Why? Because a class contains methods — we want both the
+.\core\ingestion\chunker.py:305: this came from the fallback — useful for logging and debugging.
+.\core\ingestion\chunker.py:333: Public interface — the only function called from outside this module.
+.\core\ingestion\chunker.py:346: 1. Read file → 2. Try AST chunking → 3. Fallback to line chunking
+.\core\ingestion\chunker.py:347: if AST produces nothing → 4. Return chunks
+.\core\ingestion\chunker.py:358: # File unreadable — permissions issue or file disappeared
+.\core\ingestion\chunker.py:363: # Empty file — nothing to chunk
+.\core\ingestion\chunker.py:376: f"(language={language}) — using line fallback"
+.\core\ingestion\chunker.py:385: Convenience wrapper — chunks an entire list of files.
+.\core\ingestion\chunker.py:396: # Progress log — useful when indexing large repos
+.\core\ingestion\cloner.py:2: core/ingestion/cloner.py — Downloads a GitHub repo via API (no git binary needed).
+.\core\ingestion\cloner.py:51: f"for commit lookup — will do full index"
+.\core\ingestion\cloner.py:63: Calls GET /repos/{owner}/{repo}/commits/{sha} — returns 200 if valid,
+.\core\ingestion\cloner.py:71: No silent fallbacks — per robust-implementation skill.
+.\core\ingestion\cloner.py:185: This is CHEAP — no download, just GitHub API calls.
+.\core\ingestion\cloner.py:225: # Strict validation — raises ValueError if invalid (no silent fallback)
+.\core\ingestion\cloner.py:265: No git binary required — works on any container.
+.\core\ingestion\cloner.py:281: # Exact commit archive — single URL, no fallback needed
+.\core\ingestion\cloner.py:285: # Specific branch — single URL
+.\core\ingestion\diff.py:2: core/ingestion/diff.py — Computes file-level diffs for incremental indexing.
+.\core\ingestion\diff.py:9: - added + modified files → re-chunk and re-embed
+.\core\ingestion\diff.py:10: - deleted files → remove stale chunks from Qdrant
+.\core\ingestion\diff.py:11: - unchanged files → skip entirely (saves time and API quota)
+.\core\ingestion\diff.py:33: "unchanged": [file_info, ...],   # same hash — skip these
+.\core\ingestion\walker.py:2: core/ingestion/walker.py — Walks a cloned repo and returns source files.
+.\core\ingestion\walker.py:15: - minified JS (.min.js) — unreadable by any human or LLM
+.\core\ingestion\walker.py:16: - lock files (package-lock.json, poetry.lock) — generated, not authored
+.\core\ingestion\walker.py:48: # This is important — without it, walking node_modules alone could
+.\core\ingestion\walker.py:65: "migrations",       # Django/Alembic DB migrations — generated code
+.\core\ingestion\walker.py:75: # Using endswith() checks — faster than regex for simple suffix matching.
+.\core\ingestion\walker.py:78: ".min.js",      # Minified JavaScript — unreadable
+.\core\ingestion\walker.py:119: Main function — called from the ingestion pipeline.
+.\core\ingestion\walker.py:128: "size":     2048,                        # bytes — used for logging
+.\core\ingestion\walker.py:134: The MAX_FILES cap is enforced here — first N files found, then stop.
+.\core\ingestion\walker.py:144: # This is the standard Python idiom for pruning a walk — important
+.\core\ingestion\walker.py:158: # Check file count cap first — stop if we've hit MAX_FILES
+.\core\ingestion\walker.py:192: # os.path.getsize returns bytes — we log this to spot
+.\core\ingestion\walker.py:200: # Skip empty files — nothing to analyse
+.\core\llm\client.py:2: core/llm/client.py — NVIDIA LangChain wrapper.
+.\core\llm\prompts.py:2: core/llm/prompts.py — All prompt templates in one place.
+.\core\retrieval\retriever.py:2: core/retrieval/retriever.py — Semantic search over indexed code chunks.
+.\core\retrieval\retriever.py:14: live in different spaces — similarity scores are meaningless garbage.
+.\core\retrieval\retriever.py:17: This is one of the most common RAG bugs in student projects —
+.\core\retrieval\retriever.py:23: k=5 is our default — enough context without overwhelming the LLM.
+.\core\retrieval\retriever.py:35: # Same model name is critical — see module docstring above
+.\core\retrieval\retriever.py:45: # 5 chunks × ~750 tokens each = ~3750 tokens of context.
+.\core\retrieval\retriever.py:77: "score":      0.87,   ← cosine similarity (0.0 to 1.0)
+.\core\retrieval\retriever.py:79: Returns empty list on any error — never raises.
+.\core\retrieval\retriever.py:125: # Add the similarity score — useful for debugging and
+.\core\retrieval\retriever.py:147: Used for architecture analysis and bug detection — where we want
+.\core\retrieval\retriever.py:160: with_vectors=False,  # Don't return vectors — saves bandwidth
+.\core\retrieval\retriever.py:166: chunk["score"] = 1.0  # No relevance score for scroll — set to 1.0
+.\tests\test_branch_commit.py:2: tests/test_branch_commit.py — Tests for branch/commit-aware indexing.
+.\tests\test_branch_commit.py:11: All tests are isolated — no network calls, no Qdrant, no heavy models.
+.\tests\test_branch_commit.py:55: """No branch or commit → bare repo name (backwards compatible)."""
+.\tests\test_branch_commit.py:59: """Branch → repo__branch."""
+.\tests\test_branch_commit.py:63: """Commit → repo__<first 8 chars>."""
+.\tests\test_branch_commit.py:95: """Same code chunk at two different commits → different IDs."""
+.\tests\test_branch_commit.py:101: """Same inputs + same commit → same ID."""
+.\tests\test_branch_commit.py:107: """No commit_hash → uses 'HEAD' as part of the hash."""
+.\tests\test_branch_commit.py:113: """Chunk with commit vs without → different IDs."""
+.\tests\test_diff.py:2: tests/test_diff.py — Unit tests for core/ingestion/diff.py
+.\tests\test_diff.py:56: """One file changed its hash → classified as 'modified'."""
+.\tests\test_diff.py:71: """A file in stored but not in current → classified as 'deleted'."""
+.\tests\test_diff.py:84: """A file in current but not in stored → classified as 'added'."""
+.\tests\test_embedder.py:2: tests/test_embedder.py — Unit tests for embedder.py deterministic ID generation.
+.\tests\test_embedder.py:21: """Different repo_name → different ID."""
+.\tests\test_embedder.py:27: """Different file_path → different ID."""
+.\tests\test_embedder.py:33: """Different chunk_name → different ID."""
+.\tests\test_embedder.py:39: """Different start_line → different ID."""

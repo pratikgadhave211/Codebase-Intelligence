@@ -1,6 +1,13 @@
-# Secrets — never push this
+# Secrets
 .env
+.env.local
 .secrets
+
+# Node
+node_modules/
+dist/
+build/
+.next/
 
 # Python
 __pycache__/
@@ -9,29 +16,26 @@ __pycache__/
 *.pyd
 .Python
 *.py[cod]
-
-# Virtual environment
+.venv/
 venv/
 env/
-.venv/
 
-# Cloned repos — can be huge, always regenerated
+# Cloned repos
 tmp/
 temp/
+backend/tmp/
 
-# IDE
+# OS / IDE
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# AI related
+# AI related / Storage
 .agents
 .cache
-.pycache
 .claude
 .knowledgebase
 .fastembed
 .qdrant
+backend/qdrant_storage/
