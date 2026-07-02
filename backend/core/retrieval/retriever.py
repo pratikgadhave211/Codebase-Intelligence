@@ -14,12 +14,10 @@ from fastembed import TextEmbedding, SparseTextEmbedding
 
 # Use the same models as embedder.py
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
-SPARSE_MODEL = "Qdrant/bm25"
 
 # Initialize FastEmbed directly so we can generate vectors manually
 # without relying on QdrantClient's auto-magic which is limited in v1.9.1
 _dense_model = TextEmbedding(EMBEDDING_MODEL)
-_sparse_model = SparseTextEmbedding(SPARSE_MODEL)
 
 _qdrant = QdrantClient(
     url=QDRANT_URL,
@@ -96,39 +94,16 @@ def retrieve_chunks(
     try:
         # Embed query text
         dense_vec = list(_dense_model.embed([query]))[0]
-        sparse_vec = list(_sparse_model.embed([query]))[0]
 
         # 1. Fetch dense results
         dense_results = _qdrant.search(
             collection_name=coll,
             query_vector=("fast-bge-small-en", dense_vec.tolist()),
             query_filter=query_filter,
-            limit=top_k * 2,  # Fetch more for fusion
+            limit=top_k, 
         )
 
-        # 2. Fetch sparse results (BM25)
-        # Catch errors here if the user hasn't re-ingested their repo yet
-        sparse_results = []
-        try:
-            sparse_results = _qdrant.search(
-                collection_name=coll,
-                query_vector=models.NamedSparseVector(
-                    name="fast-sparse-bm25",
-                    vector=models.SparseVector(
-                        indices=sparse_vec.indices.tolist(),
-                        values=sparse_vec.values.tolist()
-                    )
-                ),
-                query_filter=query_filter,
-                limit=top_k * 2,
-            )
-        except UnexpectedResponse as e:
-            if "not found" in str(e) or "doesn't exist" in str(e):
-                print(f"[retriever.py] Warning: Sparse vector 'fast-sparse-bm25' not found. Did you re-ingest the repo?")
-            else:
-                print(f"[retriever.py] Qdrant sparse search error: {e}")
-
-        # 3. Min-Max Normalization helper
+        # 2. Min-Max Normalization helper
         def normalize(results):
             if not results:
                 return {}
@@ -139,25 +114,21 @@ def retrieve_chunks(
             return {r.id: (r.score - min_s) / (max_s - min_s) for r in results}
 
         norm_dense = normalize(dense_results)
-        norm_sparse = normalize(sparse_results)
 
         # Map IDs back to full chunk payloads
         # Using dicts for O(1) lookups
         chunk_map = {}
-        for r in dense_results + sparse_results:
+        for r in dense_results:
             if r.id not in chunk_map:
                 chunk_map[r.id] = dict(r.payload)
 
-        # 4. Score Fusion: 0.7 Dense + 0.3 Sparse
+        # 3. Score Assignment
         scored_chunks = []
         for chunk_id, payload in chunk_map.items():
             d_score = norm_dense.get(chunk_id, 0.0)
-            s_score = norm_sparse.get(chunk_id, 0.0)
-            final_score = (0.7 * d_score) + (0.3 * s_score)
             
-            payload["score"] = round(final_score, 4)
+            payload["score"] = round(d_score, 4)
             payload["dense_score"] = round(d_score, 4)
-            payload["sparse_score"] = round(s_score, 4)
             scored_chunks.append(payload)
 
         # Sort descending by final score

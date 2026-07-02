@@ -23,7 +23,6 @@ _qdrant = QdrantClient(
     api_key=QDRANT_API_KEY,
     timeout=60,
 )
-_qdrant.set_sparse_model("Qdrant/bm25")
 
 
 def _cleanup_fastembed_cache():
