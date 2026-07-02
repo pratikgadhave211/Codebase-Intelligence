@@ -23,10 +23,10 @@ _qwen_client = ChatNVIDIA(
 )
 
 _deepseek_client = ChatNVIDIA(
-    model="meta/llama-3.3-70b-instruct",
-    temperature=1,
+    model="qwen/qwen2.5-coder-32b-instruct",
+    temperature=0.3,
     nvidia_api_key=NVIDIA_API_KEY,
-    max_tokens=2048,
+    max_tokens=1024,
     timeout=120
 )
 

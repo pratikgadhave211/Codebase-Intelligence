@@ -65,8 +65,8 @@ async def ask_question(request: AskRequest):
         question=request.question,
     )
 
-    # Call Groq
-    answer = call_llm(prompt, temperature=1.0, task_type="qa")
+    # Call LLM with lower temperature for faster, more concise QA
+    answer = call_llm(prompt, temperature=0.3, task_type="qa")
 
     return AskResponse(
         status="success",
