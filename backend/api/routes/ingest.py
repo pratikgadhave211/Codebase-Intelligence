@@ -193,7 +193,7 @@ def _run_graph_and_architecture(
         "to index a specific version."
     ),
 )
-async def ingest_repo(request: IngestRequest):
+def ingest_repo(request: IngestRequest):
     """
     Full ingestion pipeline for a GitHub repository.
 
