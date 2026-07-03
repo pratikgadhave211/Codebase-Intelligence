@@ -27,6 +27,61 @@ _nvidia_embedder = NVIDIAEmbeddings(
 DEFAULT_TOP_K = 5
 
 
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
+from langchain_community.retrievers import BM25Retriever
+from pydantic import Field
+from typing import List, Any 
+
+class DenseQdrantRetriever(BaseRetriever):
+    repo_name: str
+    commit_hash: str | None = None
+    top_k: int = 5
+    collection_name: str | None = None
+
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        coll = self.collection_name or self.repo_name
+        try:
+            existing = [c.name for c in _qdrant.get_collections().collections]
+            if coll not in existing:
+                return []
+        except Exception:
+            return []
+
+        query_filter = None
+        if self.commit_hash:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="commit_hash",
+                        match=MatchValue(value=self.commit_hash),
+                    )
+                ]
+            )
+
+        try:
+            safe_query = query[:4000]
+            dense_vec = _nvidia_embedder.embed_query(safe_query)
+            dense_results = _qdrant.query_points(
+                collection_name=coll,
+                query=dense_vec,
+                query_filter=query_filter,
+                limit=self.top_k,
+                with_payload=True,
+            ).points
+
+            docs = []
+            for r in dense_results:
+                payload = dict(r.payload)
+                payload["score"] = round(r.score, 4)
+                payload["dense_score"] = round(r.score, 4)
+                docs.append(Document(page_content=payload.get("text", ""), metadata=payload))
+            
+            return docs
+        except Exception:
+            return []
+
 def retrieve_chunks(
     query: str,
     repo_name: str,
@@ -34,79 +89,70 @@ def retrieve_chunks(
     commit_hash: str | None = None,
     collection_name: str | None = None,
 ) -> list[dict]:
-    """Embed a query and return the top-k most relevant chunks from Qdrant."""
+    """Embed a query and return the top-k most relevant chunks using EnsembleRetriever."""
     coll = collection_name or repo_name
 
-    try:
-        existing = [c.name for c in _qdrant.get_collections().collections]
-        if coll not in existing:
-            print(f"[retriever.py] Collection '{coll}' not found.")
-            return []
-    except Exception as e:
-        print(f"[retriever.py] Cannot connect to Qdrant: {e}")
+    # 1. Initialize Dense Retriever
+    dense_retriever = DenseQdrantRetriever(
+        repo_name=repo_name,
+        commit_hash=commit_hash,
+        top_k=top_k,
+        collection_name=collection_name
+    )
+
+    # 2. Initialize BM25 Retriever
+    # Fetch all chunks to build the BM25 index
+    all_chunks = retrieve_all_chunks(coll, limit=100000)
+    if not all_chunks:
         return []
 
-    query_filter = None
-    if commit_hash:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-        query_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="commit_hash",
-                    match=MatchValue(value=commit_hash),
-                )
-            ]
-        )
-
-    try:
-        # Embed query text using NVIDIA API (truncate to safe length)
-        safe_query = query[:4000]
-        dense_vec = _nvidia_embedder.embed_query(safe_query)
-
-        # Fetch dense results using standard query_points
-        dense_results = _qdrant.query_points(
-            collection_name=coll,
-            query=dense_vec,
-            query_filter=query_filter,
-            limit=top_k,
-            with_payload=True,
-        ).points
-
-        def normalize(results):
-            if not results:
-                return {}
-            scores = [r.score for r in results]
-            min_s, max_s = min(scores), max(scores)
-            if min_s == max_s:
-                return {r.id: 1.0 for r in results}
-            return {r.id: (r.score - min_s) / (max_s - min_s) for r in results}
-
-        norm_dense = normalize(dense_results)
-
-        chunk_map = {}
-        for r in dense_results:
-            if r.id not in chunk_map:
-                chunk_map[r.id] = dict(r.payload)
-
-        scored_chunks = []
-        for chunk_id, payload in chunk_map.items():
-            d_score = norm_dense.get(chunk_id, 0.0)
-            payload["score"] = round(d_score, 4)
-            payload["dense_score"] = round(d_score, 4)
-            scored_chunks.append(payload)
-
-        scored_chunks.sort(key=lambda x: x["score"], reverse=True)
-        final_chunks = scored_chunks[:top_k]
-
-        print(f"[retriever.py] Query: '{query[:50]}...' -> {len(final_chunks)} chunks retrieved from '{repo_name}'")
-        return final_chunks
-
-    except UnexpectedResponse as e:
-        print(f"[retriever.py] Qdrant search error: {e}")
+    docs_for_bm25 = [Document(page_content=c.get("text", ""), metadata=c) for c in all_chunks]
+    
+    # Check if we have documents to avoid bm25 failure
+    if not docs_for_bm25:
         return []
-    except Exception as e:
-        print(f"[retriever.py] Unexpected retrieval error: {e}")
-        return []
+        
+    bm25_retriever = BM25Retriever.from_documents(docs_for_bm25)
+    bm25_retriever.k = top_k
+
+    # 3. Retrieve individually
+    bm25_docs = bm25_retriever.invoke(query)
+    dense_docs = dense_retriever.invoke(query)
+    
+    # 4. Combine using Reciprocal Rank Fusion (RRF)
+    rrf_k = 60
+    scores = {}
+    docs_map = {}
+    
+    # helper to get unique id
+    def get_id(doc):
+        # Fallback to hash of page_content if no id in metadata
+        return str(doc.metadata.get("id", hash(doc.page_content)))
+
+    for i, doc in enumerate(bm25_docs):
+        doc_id = get_id(doc)
+        # weight 0.5 for bm25
+        scores[doc_id] = scores.get(doc_id, 0) + 0.5 * (1 / (rrf_k + i))
+        docs_map[doc_id] = doc.metadata
+        
+    for i, doc in enumerate(dense_docs):
+        doc_id = get_id(doc)
+        # weight 0.5 for dense
+        scores[doc_id] = scores.get(doc_id, 0) + 0.5 * (1 / (rrf_k + i))
+        docs_map[doc_id] = doc.metadata
+        
+    # Sort by RRF score
+    sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # 5. Extract metadata (payloads) and return up to top_k
+    final_chunks = []
+    for doc_id, score in sorted_docs[:top_k]:
+        payload = docs_map[doc_id]
+        payload["hybrid_score"] = round(score, 6)
+        final_chunks.append(payload)
+
+    print(f"[retriever.py] Query: '{query[:50]}...' -> {len(final_chunks)} chunks retrieved using Hybrid Search")
+    return final_chunks
 
 
 def retrieve_all_chunks(repo_name: str, limit: int = 50) -> list[dict]:

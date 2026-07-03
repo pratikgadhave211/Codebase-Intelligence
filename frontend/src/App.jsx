@@ -268,19 +268,19 @@ function App() {
             </div>
             {bugsData ? (
               <div style={{ flex: 1, overflowY: 'auto' }}>
-                {bugsData.findings?.map((bug, idx) => (
+                {bugsData.bugs?.map((bug, idx) => (
                   <div key={idx} className="bug-card">
                     <h3>{bug.file} (Line {bug.line})</h3>
                     <p><strong>Severity:</strong> <span style={{ color: 'var(--danger)' }}>{bug.severity}</span></p>
-                    <p>{bug.description}</p>
-                    {bug.recommendation && (
+                    <p>{bug.issue}</p>
+                    {bug.suggestion && (
                       <div style={{ marginTop: '0.5rem', background: 'rgba(255,255,255,0.05)', padding: '0.5rem', borderRadius: '4px' }}>
-                        <strong>Fix:</strong> {bug.recommendation}
+                        <strong>Fix:</strong> {bug.suggestion}
                       </div>
                     )}
                   </div>
                 ))}
-                {!bugsData.findings?.length && <p>No critical bugs found by the AI.</p>}
+                {!bugsData.bugs?.length && <p>No critical bugs found by the AI.</p>}
               </div>
             ) : (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>

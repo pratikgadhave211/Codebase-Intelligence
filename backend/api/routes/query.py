@@ -12,14 +12,14 @@ Flow:
 """
 
 from fastapi import APIRouter, HTTPException
+import uuid
 
 from api.models import AskRequest, AskResponse
-from core.retrieval.retriever import retrieve_chunks
-from core.llm.client import call_llm
-from core.llm.prompts import ANSWER_QUESTION, format_chunks_for_prompt
+from core.llm.qa_agent import qa_graph
+from langchain_core.messages import HumanMessage
+from core.storage.repo_metadata import get_repo_metadata
 
 router = APIRouter()
-
 
 @router.post(
     "/ask",
@@ -37,16 +37,10 @@ async def ask_question(request: AskRequest):
     If commit_hash is provided, only chunks from that specific version
     are returned — enabling version-specific Q&A.
     """
-
-    # Retrieve top-5 most relevant chunks for this question
-    chunks = retrieve_chunks(
-        query=request.question,
-        repo_name=request.repo_name,
-        top_k=5,
-        commit_hash=request.commit_hash,
-    )
-
-    if not chunks:
+    
+    # Check if the repo has metadata
+    metadata = get_repo_metadata(request.repo_name)
+    if not metadata:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -56,22 +50,38 @@ async def ask_question(request: AskRequest):
             ),
         )
 
-    # Format chunks into the context string for the prompt
-    code_context = format_chunks_for_prompt(chunks)
-
-    # Build the full prompt with context injected
-    prompt = ANSWER_QUESTION.format(
-        code_context=code_context,
-        question=request.question,
-    )
-
-    # Call LLM with lower temperature for faster, more concise QA
-    answer = call_llm(prompt, temperature=0.3, task_type="qa")
-
-    return AskResponse(
-        status="success",
-        repo_name=request.repo_name,
-        question=request.question,
-        answer=answer,
-        chunks_used=len(chunks),
-    )
+    # Use provided session_id or create a new one
+    session_id = request.session_id if request.session_id else str(uuid.uuid4())
+    
+    config = {
+        "configurable": {
+            "thread_id": session_id,
+            "repo_name": request.repo_name,
+            "commit_hash": request.commit_hash
+        }
+    }
+    
+    # Run the langgraph agent
+    # The agent handles retrieval and prepending the system prompt
+    input_message = HumanMessage(content=request.question)
+    
+    try:
+        # stream or invoke, invoke is easier here
+        result = qa_graph.invoke({"messages": [input_message]}, config=config)
+        
+        # Extract the latest response message from the state
+        final_message = result["messages"][-1].content
+        chunks_used = 5  # We are retrieving top_k=5 in the agent
+        
+        return AskResponse(
+            status="success",
+            repo_name=request.repo_name,
+            question=request.question,
+            answer=final_message,
+            chunks_used=chunks_used,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred during Q&A: {str(e)}"
+        )

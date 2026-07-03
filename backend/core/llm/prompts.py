@@ -12,23 +12,29 @@ Templates use Python's .format() placeholders for variable injection.
 # -----------------------------------------------------------------------
 ANSWER_QUESTION = """You are an expert software engineer analysing a codebase.
 
-Below are the most relevant code chunks retrieved from the repository,
-along with their file paths and line numbers:
+Below is the repository context, including the architecture summary, dependency graph, and the most relevant code chunks retrieved from the repository:
 
+=== ARCHITECTURE SUMMARY ===
+{architecture_summary}
+
+=== DEPENDENCY GRAPH ===
+{dependency_graph}
+
+=== CODE CHUNKS ===
 {code_context}
 
 ---
-
-Based ONLY on the code above, answer this question:
+Based on the chat history (if any) and ONLY on the repository context above, answer this question:
 {question}
 
 Rules:
 - Cite the exact file path and line number for every claim you make.
   Example: "The authentication logic is in src/auth.py at line 34."
-- If the code context does not contain enough information to answer,
+- If the context does not contain enough information to answer,
   say "I cannot find enough information in the indexed code to answer this."
   Do NOT guess or hallucinate.
 - Be concise and technical. The person asking is a developer.
+- You can refer to previous conversation context if it is relevant.
 """
 
 

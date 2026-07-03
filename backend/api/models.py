@@ -93,6 +93,11 @@ class AskRequest(BaseModel):
         description="Filter results to chunks from a specific indexed commit.",
         pattern=r"^[0-9a-f]{40}$",
     )
+    session_id: Optional[str] = Field(
+        None,
+        description="Optional session ID to maintain chat history across Q&A requests.",
+        example="user_12345",
+    )
 
 
 class AskResponse(BaseModel):
