@@ -25,7 +25,7 @@ _qwen_llm = HuggingFaceEndpoint(
 _qwen_client = ChatHuggingFace(llm=_qwen_llm)
 
 _deepseek_llm = HuggingFaceEndpoint(
-    repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
+    repo_id="meta-llama/Llama-3.1-8B-Instruct",
     task="text-generation",
     max_new_tokens=1024,
     temperature=0.3,
