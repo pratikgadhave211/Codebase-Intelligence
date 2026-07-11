@@ -7,9 +7,9 @@ using the NVIDIA Cloud Embeddings API and retrieves the top-k most relevant chun
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
-from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
-from config import QDRANT_URL, QDRANT_API_KEY, NVIDIA_API_KEY
+from config import QDRANT_URL, QDRANT_API_KEY, HF_TOKEN
 
 _qdrant = QdrantClient(
     url=QDRANT_URL,
@@ -17,11 +17,10 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-# Initialize NVIDIA Cloud Embeddings
-_nvidia_embedder = NVIDIAEmbeddings(
-    model="nvidia/nv-embedqa-e5-v5",
-    nvidia_api_key=NVIDIA_API_KEY,
-    truncate="END"
+# Initialize Hugging Face Cloud Embeddings
+_hf_embedder = HuggingFaceEndpointEmbeddings(
+    model="sentence-transformers/all-MiniLM-L6-v2",
+    huggingfacehub_api_token=HF_TOKEN,
 )
 
 DEFAULT_TOP_K = 5
@@ -62,7 +61,7 @@ class DenseQdrantRetriever(BaseRetriever):
 
         try:
             safe_query = query[:4000]
-            dense_vec = _nvidia_embedder.embed_query(safe_query)
+            dense_vec = _hf_embedder.embed_query(safe_query)
             dense_results = _qdrant.query_points(
                 collection_name=coll,
                 query=dense_vec,

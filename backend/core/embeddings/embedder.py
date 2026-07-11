@@ -13,9 +13,9 @@ import shutil
 from qdrant_client import QdrantClient
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.http.models import PayloadSchemaType, VectorParams, Distance, PointStruct
-from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
-from config import QDRANT_URL, QDRANT_API_KEY, NVIDIA_API_KEY
+from config import QDRANT_URL, QDRANT_API_KEY, HF_TOKEN
 
 _qdrant = QdrantClient(
     url=QDRANT_URL,
@@ -23,11 +23,10 @@ _qdrant = QdrantClient(
     timeout=60,
 )
 
-# Initialize NVIDIA Cloud Embeddings with built-in truncation to prevent 400 errors
-_nvidia_embedder = NVIDIAEmbeddings(
-    model="nvidia/nv-embedqa-e5-v5",
-    nvidia_api_key=NVIDIA_API_KEY,
-    truncate="END"
+# Initialize Hugging Face Cloud Embeddings
+_hf_embedder = HuggingFaceEndpointEmbeddings(
+    model="sentence-transformers/all-MiniLM-L6-v2",
+    huggingfacehub_api_token=HF_TOKEN,
 )
 
 
@@ -120,8 +119,8 @@ def _batch_upsert(coll: str, ids: list[str], texts: list[str], payloads: list[di
         # Truncate strings to ~4000 chars to avoid massive HTTP payloads
         safe_texts = [t[:4000] for t in batch_texts]
         
-        # Call NVIDIA Cloud API to embed
-        embeddings = _nvidia_embedder.embed_documents(safe_texts)
+        # Call Hugging Face API to embed
+        embeddings = _hf_embedder.embed_documents(safe_texts)
 
         # Build Qdrant PointStructs
         points = [
@@ -156,12 +155,12 @@ def embed_and_store(
             "chunks_stored": 0,
         }
 
-    # Recreate collection with NVIDIA dimension size (1024)
+    # Recreate collection with Hugging Face dimension size (384)
     _delete_if_exists(coll)
     try:
         _qdrant.create_collection(
             collection_name=coll,
-            vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
         )
     except Exception as e:
         print(f"[embedder.py] Warning creating collection: {e}")

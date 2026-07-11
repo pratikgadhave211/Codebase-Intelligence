@@ -12,6 +12,7 @@ tree-sitter-typescript==0.21.2
 qdrant-client
 # LLM — NVIDIA via LangChain
 langchain-nvidia-ai-endpoints
+langchain-huggingface
 langchain
 langchain-core
 langchain-community
